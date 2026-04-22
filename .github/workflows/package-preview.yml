@@ -1,0 +1,160 @@
+name: Package Preview
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+jobs:
+  package-preview:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+
+      # Build the wheel package
+      - name: Setup Pixi
+        uses: prefix-dev/setup-pixi@v0.9.1
+
+      - name: Build package
+        run: pixi run -e build python -m build
+
+      - name: Read package version
+        id: project_version
+        shell: bash
+        run: |
+          version=$(grep -E '^version = "' pyproject.toml | sed -E 's/version = "([^"]+)"/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Build conda package
+      - name: Build conda package
+        uses: prefix-dev/rattler-build-action@v0.2.37
+        env:
+          TIDYRUN_VERSION: ${{ steps.project_version.outputs.version }}
+        with:
+          recipe-path: conda.recipe/recipe.yaml
+          build-args: --output-dir conda-dist
+          upload-artifact: false
+          artifact-name: tidyrun-${{ steps.project_version.outputs.version }}-conda-package
+
+      - name: Collect package metadata
+        id: package_info
+        shell: bash
+        run: |
+          wheel_path=$(find dist -maxdepth 1 -name 'tidyrun-*.whl' -print -quit)
+          conda_path=$(find conda-dist -name 'tidyrun-*.conda' -print -quit)
+
+          wheel_filename=$(basename "$wheel_path")
+          conda_filename=$(basename "$conda_path")
+
+          echo "wheel_path=$wheel_path" >> "$GITHUB_OUTPUT"
+          echo "conda_path=$conda_path" >> "$GITHUB_OUTPUT"
+          echo "wheel_filename=$wheel_filename" >> "$GITHUB_OUTPUT"
+          echo "conda_filename=$conda_filename" >> "$GITHUB_OUTPUT"
+          echo "version=${{ steps.project_version.outputs.version }}" >> "$GITHUB_OUTPUT"
+
+      # Upload the wheel and conda package as artifacts
+      - name: Upload wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: tidyrun-${{ steps.project_version.outputs.version }}-wheel
+          path: ${{ steps.package_info.outputs.wheel_path }}
+
+      - name: Upload conda package
+        uses: actions/upload-artifact@v7
+        with:
+          name: tidyrun-${{ steps.project_version.outputs.version }}-conda-package
+          path: ${{ steps.package_info.outputs.conda_path }}
+
+      # Comment on PR with artifact link
+      - name: Comment with direct artifact link
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v9
+        env:
+          WHEEL_ARTIFACT_NAME: tidyrun-${{ steps.project_version.outputs.version }}-wheel
+          CONDA_ARTIFACT_NAME: tidyrun-${{ steps.project_version.outputs.version }}-conda-package
+          WHEEL_FILENAME: ${{ steps.package_info.outputs.wheel_filename }}
+          CONDA_FILENAME: ${{ steps.package_info.outputs.conda_filename }}
+        with:
+          script: |
+            const pr_number = context.payload.pull_request.number;
+            const run_id = context.runId;
+            const marker = '<!-- tidyrun-artifact-link -->';
+            const wheelArtifactName = process.env.WHEEL_ARTIFACT_NAME;
+            const condaArtifactName = process.env.CONDA_ARTIFACT_NAME;
+            const wheelFilename = process.env.WHEEL_FILENAME;
+            const condaFilename = process.env.CONDA_FILENAME;
+
+            // List artifacts for this run
+            const { data: { artifacts } } = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: run_id,
+            });
+
+            // Find the artifact for the wheel package
+            let artifact = artifacts.find(a => a.name === wheelArtifactName);
+            let wheel_url;
+            if (artifact) {
+              wheel_url = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${run_id}/artifacts/${artifact.id}`;
+            } else {
+              wheel_url = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${run_id}#artifacts`;
+            }
+
+            // Find the artifact for the conda package
+            artifact = artifacts.find(a => a.name === condaArtifactName);
+            let conda_url;
+            if (artifact) {
+              conda_url = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${run_id}/artifacts/${artifact.id}`;
+            } else {
+              conda_url = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${run_id}#artifacts`;
+            }
+
+
+            const body = `${marker}
+            Preview packages for this PR are ready.
+
+            Wheel: [${wheelFilename}](${wheel_url})
+            Unzip it first, then install with <code>pip install ${wheelFilename}</code>.
+
+            Conda: [${condaFilename}](${conda_url})
+            Unzip it first, then install with <code>conda install ${condaFilename}</code>.
+            `;
+
+            // List comments on the PR
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr_number,
+            });
+
+            // Find existing comment by this workflow (by marker)
+            const existing = comments.find(
+              c => c.user.type === 'Bot' && c.body && c.body.includes(marker)
+            );
+
+            if (existing) {
+              // Update the existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              // Create a new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr_number,
+                body,
+              });
+            }
