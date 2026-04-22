@@ -1,0 +1,23 @@
+# PyCharm & VS Code
+.idea
+.vscode
+
+# Pixi
+.pixi/
+
+# Python
+*.egg-info
+*.pyc
+
+# Build artifacts
+build
+dist
+conda-dist
+
+# Notebooks
+*.ipynb
+.ipynb_checkpoints
+!tests/test_notebook.ipynb
+
+# Jupyter Book
+_build

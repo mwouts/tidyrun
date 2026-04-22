@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tidyrun"
+authors = [{name = "Marc Wouts", email = "marc.wouts@gmail.com"}]
+maintainers = [{name = "Marc Wouts", email = "marc.wouts@gmail.com"}]
+description = "TidyRun"
+readme = "README.md"
+license = { file = "LICENSE" }
+keywords = []
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Typing :: Typed",
+]
+version = "0.0.0"
+requires-python = ">= 3.9"
+dependencies = []
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "pytest-cov>=5",
+]
+dev = [
+    "pre-commit>=4.0",
+    "pyright>=1",
+    "pytest>=8",
+    "pytest-cov>=5",
+]
+
+[project.urls]
+Homepage = "https://github.com/mwouts/tidyrun"
+Repository = "https://github.com/mwouts/tidyrun.git"
+Issues = "https://github.com/mwouts/tidyrun/issues"
+
+[tool.hatch.build.targets.sdist]
+packages = ["src/tidyrun"]
+artifacts = [
+    "src/tidyrun/py.typed",
+    ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tidyrun"]
+artifacts = [
+    "src/tidyrun/py.typed",
+    ]
+
+[tool.pyright]
+typeCheckingMode = "standard"
+strict = [
+    "docs",
+    "src/tidyrun/",
+    ]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
+
+[tool.pixi.pypi-dependencies]
+tidyrun = {path = ".", extras = ["dev"], editable = true}
+
+[tool.pixi.feature.build.pypi-dependencies]
+build = "*"
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+build = { features = ["build"], solve-group = "default" }
