@@ -1,0 +1,41 @@
+context:
+  version: ${{ env.get("TIDYRUN_VERSION") }}
+
+package:
+  name: tidyrun
+  version: ${{ version }}
+
+source:
+  path: ..
+
+build:
+  number: 0
+  noarch: python
+  script: pip install . -vv --no-deps --no-build-isolation
+
+requirements:
+  host:
+    - python >=3.9
+    - hatchling
+    - pip
+  run:
+    - python >=3.9
+
+tests:
+  - python:
+      imports:
+        - tidyrun
+  - script:
+      - pip check
+      - python -c "import tidyrun; print(tidyrun.__version__)"
+    requirements:
+      run:
+        - pip
+
+about:
+  homepage: https://github.com/mwouts/tidyrun
+  repository: https://github.com/mwouts/tidyrun
+  summary: Orchestrate the compute and storage of Python Jobs
+  license: Apache-2.0
+  license_file: LICENSE
+  description: Orchestrate the compute and storage of Python Jobs
