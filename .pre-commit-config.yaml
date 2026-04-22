@@ -1,0 +1,29 @@
+# Install pre-commit hooks via
+# pre-commit install
+
+repos:
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+    - id: check-json
+    - id: check-yaml
+      exclude: ^conda\.recipe/meta\.yaml$
+    - id: end-of-file-fixer
+    - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.11
+    hooks:
+      - id: ruff
+        args: ["--fix", "--show-fixes"]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: pixi-update-lock
+        name: Update pixi.lock file
+        entry: pixi lock
+        language: system
+        pass_filenames: false
+        files: ^(pyproject\.toml|pixi\.lock)$
