@@ -1210,7 +1210,7 @@ packages:
 - pypi: ./
   name: tidyrun
   version: 0.0.0
-  sha256: 83c0142beb4b18092bd4280cc0e073cd041420fddee92916f67a5fb8ec695abd
+  sha256: bb4b2461d15993ebe0246b709e81f952712d7f8bf3eff5f76d3b68df87a7d544
   requires_dist:
   - pytest>=8 ; extra == 'test'
   - pytest-cov>=5 ; extra == 'test'
