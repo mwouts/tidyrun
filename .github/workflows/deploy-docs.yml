@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - serialize_v01
     paths:
       - 'docs/**'
       - 'mkdocs.yml'
@@ -13,7 +12,6 @@ on:
   pull_request:
     branches:
       - main
-      - serialize_v01
     paths:
       - 'docs/**'
       - 'mkdocs.yml'
@@ -53,7 +51,7 @@ jobs:
           path: 'site'
 
   deploy:
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/serialize_v01')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
