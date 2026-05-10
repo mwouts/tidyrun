@@ -25,20 +25,39 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Typing :: Typed",
 ]
-version = "0.0.0"
+version = "0.0.1"
 requires-python = ">= 3.9"
-dependencies = []
+dependencies = [
+    "toml>=0.10",
+]
 
 [project.optional-dependencies]
 test = [
     "pytest>=8",
     "pytest-cov>=5",
+    "moto[s3]>=5.0",
+]
+docs = [
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.0",
+    "mkdocstrings>=0.24",
+    "mkdocstrings-python>=1.0",
+    "pymdown-extensions>=10.0",
 ]
 dev = [
     "pre-commit>=4.0",
     "pyright>=1",
     "pytest>=8",
     "pytest-cov>=5",
+    "moto[s3]>=5.0",
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.0",
+    "mkdocstrings>=0.24",
+    "mkdocstrings-python>=1.0",
+    "pymdown-extensions>=10.0",
+]
+s3 = [
+    "boto3>=1.0",
 ]
 
 [project.urls]
@@ -78,3 +97,15 @@ build = "*"
 [tool.pixi.environments]
 default = { solve-group = "default" }
 build = { features = ["build"], solve-group = "default" }
+docs = { solve-group = "default" }
+
+[tool.pixi.dependencies]
+toml = "*"
+pandas = "*"
+pyarrow = "*"  # parquet support
+pytables = "*"  # HDF5 support
+mkdocs = ">=1.5"
+mkdocs-material = ">=9.0"
+mkdocstrings = ">=0.24"
+mkdocstrings-python = ">=1.0"
+pymdown-extensions = ">=10.0"

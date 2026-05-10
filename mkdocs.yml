@@ -1,0 +1,68 @@
+site_name: TidyRun
+site_description: A tool to orchestrate the compute and storage of Python DAGs
+site_author: TidyRun Contributors
+repo_url: https://github.com/mwouts/tidyrun
+repo_name: mwouts/tidyrun
+edit_uri: edit/serialize_v01/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: light
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: dark
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - content.code.copy
+    - content.code.select
+    - search.highlight
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: true
+
+markdown_extensions:
+  - pymdownx.highlight:
+      use_pygments: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.details
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - admonition
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Serialization:
+    - Guide: serialization.md
+    - Design Decisions: design-decisions.md
+  - Contributing: contributing.md
+  - Quick Start: quick_start.md
+  - Changelog: changelog.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/mwouts/tidyrun
