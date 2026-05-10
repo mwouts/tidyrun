@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from os import PathLike
-from typing import Any, Callable
+from typing import Any, Callable, Union
 
 Predicate = Callable[[Any], bool]
-Location = str | PathLike[str]
+Location = Union[str, PathLike[str]]
 Serializer = Callable[[Any, Location], None]
 Deserializer = Callable[[Location], Any]
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from tidyrun.keys import Key
 
@@ -53,7 +53,9 @@ class LazyDict(Mapping[Key, Any]):
         - transform: optional function applied to each leaf before concat
         - select: optional predicate `(path, value) -> bool` to filter leaves
         """
-        import pandas as pd
+        import pandas as pd  # pyright: ignore[reportMissingTypeStubs]
+
+        pd = cast(Any, pd)
 
         def _identity(value: Any) -> Any:
             return value
@@ -69,7 +71,7 @@ class LazyDict(Mapping[Key, Any]):
         )
 
         keys: list[tuple[Key, ...]] = []
-        values: list[pd.DataFrame] = []
+        values: list[Any] = []
 
         def _collect(node: LazyDict, prefix: tuple[Key, ...]) -> None:
             for key in node:
@@ -84,7 +86,7 @@ class LazyDict(Mapping[Key, Any]):
 
                 transformed = selected_transform(value)
                 if isinstance(transformed, pd.Series):
-                    frame = transformed.to_frame()
+                    frame: Any = transformed.to_frame()
                 elif isinstance(transformed, pd.DataFrame):
                     frame = transformed
                 else:

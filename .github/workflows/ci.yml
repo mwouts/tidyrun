@@ -24,7 +24,8 @@ jobs:
         with:
           pixi-version: latest
           cache: true
-      - uses: pre-commit/action@v3.0.1
+      - name: Run pre-commit
+        run: pixi run pre-commit run --all-files
 
   pyright:
     runs-on: ubuntu-latest

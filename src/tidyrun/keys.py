@@ -9,12 +9,12 @@ into their original values using toml.
 """
 
 from datetime import date, datetime, time
-from typing import Type
+from typing import Any, Type, Union, cast
 
 import toml
 from .constants import TIDYRUN_METADATA_EXTENSION
 
-Key = str | int | float | bool | date | datetime | time
+Key = Union[str, int, float, bool, date, datetime, time]
 _KEY_NAME = "key"
 
 
@@ -48,7 +48,8 @@ def encode_key(key: Key) -> str:
         raise TidyRunKeyEncodingError(f"Unsupported key type: {type(key).__name__}")
 
     try:
-        toml_doc: str = toml.dumps({_KEY_NAME: key})
+        toml_module = cast(Any, toml)
+        toml_doc = cast(str, toml_module.dumps({_KEY_NAME: key}))
     except (TypeError, ValueError) as exc:
         raise TidyRunKeyEncodingError(
             f"Unsupported key type: {type(key).__name__}"
@@ -67,7 +68,10 @@ def decode_key(name: str) -> Key:
     _validate_name(name, error_type=TidyRunKeyDecodingError)
 
     try:
-        value = toml.loads(f"{_KEY_NAME} = {name}\n")[_KEY_NAME]
+        toml_module = cast(Any, toml)
+        value = cast(dict[str, Any], toml_module.loads(f"{_KEY_NAME} = {name}\n"))[
+            _KEY_NAME
+        ]
     except toml.TomlDecodeError as exc:
         raise TidyRunKeyDecodingError(f"Invalid encoded key: {name!r}") from exc
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from typing import Any
+from typing import Any, cast
 
 from tidyrun.constants import TIDYRUN_METADATA_EXTENSION
 from tidyrun.keys import Key, decode_key, encode_key
@@ -39,6 +39,12 @@ def _decoded_name_from_payload_name(name: str) -> str | None:
     return name
 
 
+def _pandas() -> Any:
+    import pandas as pd  # pyright: ignore[reportMissingTypeStubs]
+
+    return cast(Any, pd)
+
+
 def is_mapping(value: Any) -> bool:
     """Return whether a value should be encoded as a folder."""
     return isinstance(value, dict)
@@ -47,7 +53,7 @@ def is_mapping(value: Any) -> bool:
 def is_dataframe(value: Any) -> bool:
     """Return whether a value is a pandas DataFrame."""
     try:
-        import pandas as pd
+        pd = _pandas()
     except ImportError:
         return False
 
@@ -57,7 +63,7 @@ def is_dataframe(value: Any) -> bool:
 def is_pandas_series(value: Any) -> bool:
     """Return whether a value is a pandas Series."""
     try:
-        import pandas as pd
+        pd = _pandas()
     except ImportError:
         return False
 
@@ -151,7 +157,7 @@ def encode_dataframe_as_parquet(value: Any, target_file: Location) -> None:
 
 def decode_dataframe_from_parquet(source_file: Location) -> Any:
     """Decode a dataframe from a `.parquet` file."""
-    import pandas as pd
+    pd = _pandas()
 
     file_path = with_suffix(to_local_path(source_file), DEFAULT_PARQUET_EXTENSION)
     return pd.read_parquet(file_path)
@@ -176,7 +182,7 @@ def encode_series_as_parquet(value: Any, target_file: Location) -> None:
 
 def decode_series_from_parquet(source_file: Location) -> Any:
     """Decode a pandas Series from a `.parquet` file."""
-    import pandas as pd
+    pd = _pandas()
 
     file_path = with_suffix(to_local_path(source_file), DEFAULT_PARQUET_EXTENSION)
     df = pd.read_parquet(file_path)
@@ -203,7 +209,7 @@ def encode_pandas_as_hdf5(value: Any, target_file: Location) -> None:
 
 def decode_pandas_from_hdf5(source_file: Location) -> Any:
     """Decode a pandas DataFrame or Series from HDF5 key `data`."""
-    import pandas as pd
+    pd = _pandas()
 
     file_path = with_suffix(to_local_path(source_file), DEFAULT_HDF5_EXTENSION)
     return pd.read_hdf(file_path, key="data")

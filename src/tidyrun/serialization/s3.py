@@ -12,16 +12,16 @@ def is_s3_location(location: Location) -> bool:
     return isinstance(location, str) and location.startswith("s3://")
 
 
-def _require_boto3() -> object:
+def _require_boto3() -> Any:
     try:
-        import boto3
+        import boto3  # pyright: ignore[reportMissingTypeStubs]
     except ImportError as exc:
         raise NotImplementedError(
             "S3 support requires the optional 'boto3' dependency. "
             "Install tidyrun[s3] to enable it."
         ) from exc
 
-    return boto3
+    return cast(Any, boto3)
 
 
 def _parse_s3_location(location: str) -> tuple[str, str]:
@@ -124,7 +124,7 @@ def deserialize_from_s3(
     download_s3_tree_to_local_root(location_str, local_root)
     result = deserialize(local_root / _leaf_name_from_key(key), encoders=encoders)
     if hasattr(result, "_keepalive"):
-        cast(Any, result)._keepalive = tempdir
+        setattr(result, "_keepalive", tempdir)
     else:
         tempdir.cleanup()
     return result
