@@ -21,3 +21,6 @@ conda-dist
 
 # Jupyter Book
 _build
+
+# MkDocs / GitHub Pages build output
+site/
