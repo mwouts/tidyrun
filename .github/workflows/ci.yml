@@ -22,7 +22,7 @@ jobs:
       - name: Setup Pixi
         uses: prefix-dev/setup-pixi@v0.9.1
         with:
-          pixi-version: 0.67.2
+          pixi-version: v0.67.2
           cache: true
       - name: Run pre-commit
         run: pixi run pre-commit run --all-files
@@ -35,7 +35,7 @@ jobs:
       - name: Setup Pixi
         uses: prefix-dev/setup-pixi@v0.9.1
         with:
-          pixi-version: 0.67.2
+          pixi-version: v0.67.2
           cache: true
       - run: pixi run pyright
 
@@ -90,7 +90,7 @@ jobs:
       - name: Setup Pixi
         uses: prefix-dev/setup-pixi@v0.9.1
         with:
-          pixi-version: 0.67.2
+          pixi-version: v0.67.2
           cache: true
 
       - name: Test with pytest
@@ -112,7 +112,7 @@ jobs:
       - name: Setup Pixi
         uses: prefix-dev/setup-pixi@v0.9.1
         with:
-          pixi-version: 0.67.2
+          pixi-version: v0.67.2
           cache: false
 
       - name: Update pixi environment
