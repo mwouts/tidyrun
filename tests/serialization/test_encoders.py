@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from tidyrun.serialize import can_encode_with_hdf5, is_dataframe, is_json_serializable
+from tidyrun.serialization import (
+    can_encode_with_hdf5,
+    is_dataframe,
+    is_json_serializable,
+)
 
 
 def test_is_dataframe_without_pandas_dependency() -> None:

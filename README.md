@@ -18,7 +18,7 @@ TidyRun includes a comprehensive serialization system for storing and retrieving
 
 **Quick Example:**
 ```python
-from tidyrun.serialize import serialize, deserialize
+from tidyrun import serialize, deserialize
 
 # Save nested data with smart format selection
 serialize({

@@ -28,7 +28,7 @@ tests:
         - tidyrun
   - script:
       - pip check
-      - python -c "import tidyrun; print(tidyrun.__version__)"
+      - python -c "import tidyrun; assert isinstance(tidyrun.__version__, str); assert hasattr(tidyrun, 'deserialize'); from tidyrun import deserialize; assert deserialize is tidyrun.deserialize"
     requirements:
       run:
         - pip

@@ -2,6 +2,20 @@
 
 All notable changes to TidyRun are documented in this file.
 
+## [0.0.2] — 2026-05-11
+
+### Changed
+
+- Simplified the public serialization API path by removing the `tidyrun.serialize` compatibility module and standardizing imports on `tidyrun.serialization` (while still exposing `serialize` and `deserialize` from `tidyrun`).
+- Updated docs and tests to use the new import paths.
+
+### Fixed
+
+- Fixed wheel packaging for PyPI: the previous published package was effectively empty (metadata only, no `tidyrun` module files).
+- Added release/build-time package smoke checks to verify the built artifact exports `tidyrun.__version__` and `tidyrun.deserialize`.
+- Fixed packaging/editable install behavior so `tidyrun` is importable in the Pixi dev environment (`src` path is now wired for Hatch dev mode).
+
+
 ## [0.0.1] — 2026-05-10
 
 ### Serialization Framework (Initial Release)

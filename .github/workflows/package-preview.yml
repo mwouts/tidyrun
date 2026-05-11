@@ -30,6 +30,22 @@ jobs:
       - name: Build package
         run: pixi run -e build python -m build
 
+      - name: Verify wheel exports
+        shell: bash
+        run: |
+          python3 -m venv .wheel-check
+          .wheel-check/bin/pip install --upgrade pip
+          .wheel-check/bin/pip install dist/tidyrun-*.whl
+          .wheel-check/bin/python - <<'PY'
+          import tidyrun
+
+          assert isinstance(tidyrun.__version__, str)
+          assert hasattr(tidyrun, "deserialize")
+          from tidyrun import deserialize
+
+          assert deserialize is tidyrun.deserialize
+          PY
+
       - name: Read package version
         id: project_version
         shell: bash

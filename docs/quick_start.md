@@ -120,7 +120,7 @@ When adding or updating documentation:
 **Code Examples:**
 ```python
 # Always include complete, runnable examples
-from tidyrun.serialize import serialize, deserialize
+from tidyrun import serialize, deserialize
 
 data = {"key": "value"}
 serialize(data, "./output")

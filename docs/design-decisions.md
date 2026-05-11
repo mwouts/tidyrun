@@ -140,19 +140,17 @@
 
 ---
 
-## 10. Public API Backward Compatibility via Facade
+## 10. Public API via Serialization Package
 
-**Decision:** Split implementation into `serialization/` subpackage but maintain `serialize.py` as a re-exporting facade.
+**Decision:** Split implementation into `serialization/` subpackage and expose it directly.
 
 **Rationale:**
-- Existing code using `from tidyrun.serialize import serialize` continues working
-- Doesn't force users to update imports
+- Public API now matches the implementation package name
 - Clear internal module structure for future development
-- Facade can eventually deprecate old imports with warnings
 
-**Trade-off:** Slight indirection in imports; worth the compatibility.
+**Trade-off:** Slightly longer import path for users.
 
-**Alternative Considered:** Move everything immediately — breaks user code without migration path.
+**Alternative Considered:** Keep a separate compatibility facade — no longer needed.
 
 ---
 
