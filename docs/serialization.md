@@ -13,14 +13,14 @@ The TidyRun serialization framework provides a comprehensive, extensible system 
 - **Recursive Concatenation**: `LazyDict.concat()` method provides pandas-style aggregation across nested structures
 - **Fallback Chain**: Intelligent fallback routing (e.g., parquet → HDF5 when parquet encoding fails)
 - **Extensible Pipeline**: Users can provide custom encoder sequences and compose encoders
-- **Backward-Compatible**: Existing code importing from `tidyrun.serialize` continues to work
+- **Direct Import Path**: Use `tidyrun.serialization` for the serialization API
 
 ## Quick Start
 
 ### Basic Serialization
 
 ```python
-from tidyrun.serialize import serialize, deserialize
+from tidyrun import serialize, deserialize
 import pandas as pd
 
 # Serialize a simple value
@@ -117,7 +117,7 @@ combined = loaded.concat(
 TidyRun serialization provides save/load behavior with automatic format selection:
 
 ```python
-from tidyrun.serialize import serialize, deserialize
+from tidyrun import serialize, deserialize
 
 serialize({"df": my_dataframe, "config": settings}, "./output/result")
 
@@ -399,7 +399,7 @@ Returns the default 6-encoder pipeline in priority order.
 Raised when serialization fails (e.g., no encoder matches the value type).
 
 ```python
-from tidyrun.serialize import TidyRunSerializationError
+from tidyrun.serialization import TidyRunSerializationError
 
 try:
     serialize(some_unsupported_type(), "./output")
@@ -412,7 +412,7 @@ except TidyRunSerializationError as e:
 Raised when deserialization fails (e.g., missing metadata, invalid format).
 
 ```python
-from tidyrun.serialize import TidyRunDeserializationError
+from tidyrun.serialization import TidyRunDeserializationError
 
 try:
     deserialize("./invalid_path")
@@ -463,7 +463,7 @@ original = decode_key("42")       # 42
 To add support for a custom type:
 
 ```python
-from tidyrun.serialize import EncoderSpec, serialize
+from tidyrun.serialization import EncoderSpec, serialize
 
 def is_my_type(value):
     return isinstance(value, MyType)
@@ -484,7 +484,7 @@ my_encoder = EncoderSpec(
 )
 
 # Use custom encoder
-from tidyrun.serialize import default_encoders
+from tidyrun.serialization import default_encoders
 
 custom_pipeline = (my_encoder,) + default_encoders()
 serialize(my_value, "./output", encoders=custom_pipeline)
@@ -495,7 +495,7 @@ serialize(my_value, "./output", encoders=custom_pipeline)
 To override the default pipeline order:
 
 ```python
-from tidyrun.serialize import default_encoders, EncoderSpec
+from tidyrun.serialization import default_encoders, EncoderSpec
 
 # Reorder: put HDF5 before Parquet
 encoders = default_encoders()
@@ -576,7 +576,7 @@ Key test modules:
 
 ```python
 import pandas as pd
-from tidyrun.serialize import serialize, deserialize
+from tidyrun import serialize, deserialize
 
 # After running an experiment
 results = {

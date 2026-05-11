@@ -7,7 +7,7 @@ import pytest
 import toml
 
 from tidyrun.constants import TIDYRUN_METADATA_EXTENSION, TIDYRUN_METADATA_VERSION
-from tidyrun.serialize import (
+from tidyrun.serialization import (
     GoToNextEncoderException,
     LazyDict,
     TidyRunDeserializationError,

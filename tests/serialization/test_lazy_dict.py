@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tidyrun.serialize import LazyDict, deserialize, serialize
+from tidyrun.serialization import LazyDict, deserialize, serialize
 
 
 def test_lazy_dict_concat_nested_dataframes(tmp_path: Path) -> None:

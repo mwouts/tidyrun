@@ -8402,8 +8402,8 @@ packages:
   timestamp: 1762948090450
 - pypi: ./
   name: tidyrun
-  version: 0.0.1
-  sha256: d367e48c5ececaf9bab6168eb467f16098c369055a1d11a1916dd799aa97a014
+  version: 0.0.2
+  sha256: 9fcf2c7ac21c75f704a90247ca557c1b2775d2d96f111839d13e1da3be04bf1e
   requires_dist:
   - toml>=0.10
   - pytest>=8 ; extra == 'test'

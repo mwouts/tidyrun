@@ -44,7 +44,7 @@ combined = results.concat(names=["run_id"])  # Stack all DataFrames
 ### 🔌 Extensible Pipeline
 Add support for custom types by creating custom encoders:
 ```python
-from tidyrun.serialize import EncoderSpec, serialize
+from tidyrun.serialization import EncoderSpec, serialize
 
 my_encoder = EncoderSpec(
     name="my-type",
@@ -64,7 +64,7 @@ If one encoder fails, the next in the chain is automatically tried:
 ## Quick Start
 
 ```python
-from tidyrun.serialize import serialize, deserialize
+from tidyrun import serialize, deserialize
 import pandas as pd
 
 # Save nested data
