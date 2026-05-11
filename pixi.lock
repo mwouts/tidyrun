@@ -8403,7 +8403,7 @@ packages:
 - pypi: ./
   name: tidyrun
   version: 0.0.2
-  sha256: 9fcf2c7ac21c75f704a90247ca557c1b2775d2d96f111839d13e1da3be04bf1e
+  sha256: 16d1f1769f0694f83a5b08f8173ca9dced3884cc6ad859c5b1138f58213b399b
   requires_dist:
   - toml>=0.10
   - pytest>=8 ; extra == 'test'
