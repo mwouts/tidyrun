@@ -103,11 +103,22 @@ combined = loaded.concat(
     transform=lambda df: df.assign(loaded_at=pd.Timestamp.now())
 )
 
+# Transform to scalar values (wrapped as a one-row "value" column)
+totals = loaded.concat(
+    names=["run_id"],
+    transform=lambda df: df["metric"].sum(),
+)
+
 # With filtering (load only specific runs)
 combined = loaded.concat(
     names=["run_id"],
-    select=lambda path, value: path[0] in ["run_1", "run_2"]
+    select=lambda path: path[0] in ["run_1", "run_2"]
 )
+
+# select(path) argument:
+# - path: tuple of keys to the leaf (e.g. ("run_1", "metrics"))
+# Note: select is evaluated at multiple depths while traversing nested folders.
+# If you index deeper elements like path[1], guard with len(path) first.
 ```
 
 ## Quick Reference
@@ -362,7 +373,7 @@ combined = loaded.concat(
 # With filtering
 combined = loaded.concat(
     names=["experiment_id"],
-    select=lambda path, value: "important" in path
+    select=lambda path: "important" in path
 )
 ```
 
@@ -532,7 +543,7 @@ combined = loaded.concat()
 
 # Load only 10 specific experiments (low memory)
 combined = loaded.concat(
-    select=lambda path, value: path[0] in experiments[:10]
+    select=lambda path: path[0] in experiments[:10]
 )
 ```
 
@@ -634,7 +645,7 @@ results = deserialize("./results_by_month")
 # Concatenate only 2026 results, adding month info
 combined = results.concat(
     names=["month"],
-    select=lambda path, value: path[0].startswith("2026"),
+    select=lambda path: path[0].startswith("2026"),
     transform=lambda df: df.assign(period="2026")
 )
 ```

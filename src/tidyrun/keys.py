@@ -47,6 +47,22 @@ def encode_key(key: Key) -> str:
     if not _is_supported_key(key):
         raise TidyRunKeyEncodingError(f"Unsupported key type: {type(key).__name__}")
 
+    if isinstance(key, str):
+        _validate_name(key, error_type=TidyRunKeyEncodingError)
+
+        # Keep plain strings unquoted unless parsing them as TOML would
+        # coerce them to a different type (e.g. int/bool/date).
+        try:
+            toml_module = cast(Any, toml)
+            parsed = cast(dict[str, Any], toml_module.loads(f"{_KEY_NAME} = {key}\n"))[
+                _KEY_NAME
+            ]
+        except toml.TomlDecodeError:
+            return key
+
+        if parsed == key and isinstance(parsed, str):
+            return key
+
     try:
         toml_module = cast(Any, toml)
         toml_doc = cast(str, toml_module.dumps({_KEY_NAME: key}))
@@ -73,7 +89,9 @@ def decode_key(name: str) -> Key:
             _KEY_NAME
         ]
     except toml.TomlDecodeError as exc:
-        raise TidyRunKeyDecodingError(f"Invalid encoded key: {name!r}") from exc
+        if name.startswith('"') or name.startswith("'"):
+            raise TidyRunKeyDecodingError(f"Invalid encoded key: {name!r}") from exc
+        return name
 
     if not _is_supported_key(value):
         raise TidyRunKeyDecodingError(
