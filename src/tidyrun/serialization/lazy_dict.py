@@ -44,14 +44,23 @@ class LazyDict(Mapping[Key, Any]):
         self,
         names: list[str] | None = None,
         transform: Callable[[Any], Any] | None = None,
-        select: Callable[[tuple[Key, ...], Any], bool] | None = None,
+        select: Callable[[tuple[Key, ...]], bool] | None = None,
     ) -> Any:
-        """Concatenate leaf pandas objects from a nested LazyDict.
+        """Concatenate leaf values from a nested LazyDict.
 
-        Parameters mirror the intended high-level behavior:
-        - names: names for the concatenation key levels
-        - transform: optional function applied to each leaf before concat
-        - select: optional predicate `(path, value) -> bool` to filter leaves
+        Parameters:
+        - names: names for the concatenation key levels.
+        - transform: optional function applied to each selected leaf value.
+          The transformed value may be a pandas DataFrame, pandas Series,
+          or a scalar value.
+        - select: optional predicate called as ``select(path)`` where ``path``
+          is a tuple of keys to a node (for example, ``("run_001", "metrics")``).
+          Selection is evaluated before loading child values, so paths that are
+          filtered out are never deserialized.
+
+        Returns a pandas DataFrame from ``pd.concat`` with a MultiIndex built
+        from selected leaf paths. Scalar transformed values are wrapped as a
+        single-row Series before concatenation.
         """
         import pandas as pd  # pyright: ignore[reportMissingTypeStubs]
 
@@ -60,13 +69,13 @@ class LazyDict(Mapping[Key, Any]):
         def _identity(value: Any) -> Any:
             return value
 
-        def _select_all(_path: tuple[Key, ...], _value: Any) -> bool:
+        def _select_all(_path: tuple[Key, ...]) -> bool:
             return True
 
         selected_transform: Callable[[Any], Any] = (
             transform if transform is not None else _identity
         )
-        selected_filter: Callable[[tuple[Key, ...], Any], bool] = (
+        selected_filter: Callable[[tuple[Key, ...]], bool] = (
             select if select is not None else _select_all
         )
 
@@ -75,13 +84,13 @@ class LazyDict(Mapping[Key, Any]):
 
         def _collect(node: LazyDict, prefix: tuple[Key, ...]) -> None:
             for key in node:
-                value = node[key]
                 current_path = prefix + (key,)
-                if isinstance(value, LazyDict):
-                    _collect(value, current_path)
+                if not selected_filter(current_path):
                     continue
 
-                if not selected_filter(current_path, value):
+                value = node[key]
+                if isinstance(value, LazyDict):
+                    _collect(value, current_path)
                     continue
 
                 transformed = selected_transform(value)
@@ -90,10 +99,7 @@ class LazyDict(Mapping[Key, Any]):
                 elif isinstance(transformed, pd.DataFrame):
                     frame = transformed
                 else:
-                    raise TypeError(
-                        "concat expects leaves (or transformed leaves) to be "
-                        "pandas DataFrame or Series"
-                    )
+                    frame = pd.Series([transformed], name="value").to_frame()
 
                 keys.append(current_path)
                 values.append(frame)

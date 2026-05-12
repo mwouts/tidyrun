@@ -2,6 +2,20 @@
 
 All notable changes to TidyRun are documented in this file.
 
+## [0.0.3] — 2026-05-12
+
+### Changed
+
+- Updated key encoding to keep plain strings unquoted when safe, while still quoting string keys that would otherwise be parsed as non-string TOML values.
+- Updated key decoding to accept bare string folder names when TOML parsing fails, improving interoperability with manually-created directory trees.
+- Updated `LazyDict.concat(select=...)` to use a path-only callback signature (`select(path)`) and to evaluate selection before loading children.
+- Updated `LazyDict.concat(transform=...)` to accept scalar transform outputs (wrapped as a single-row pandas object for concatenation).
+
+### Fixed
+
+- Fixed deserialization of nested directories without `.tidyrun` sidecars when subdirectory names are simple strings.
+- Updated serialization tests to match the new simple-string on-disk key naming convention.
+
 ## [0.0.2] — 2026-05-11
 
 ### Changed

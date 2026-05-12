@@ -33,8 +33,8 @@ def test_serialize_deserialize_scalar_json(tmp_path: Path) -> None:
     root_meta_data = toml.loads(root_metadata.read_text(encoding="utf-8"))
     assert root_meta_data["version"] == TIDYRUN_METADATA_VERSION
 
-    assert (target / f'"a"{TIDYRUN_METADATA_EXTENSION}').is_file()
-    assert (target / '"a".json').is_file()
+    assert (target / f"a{TIDYRUN_METADATA_EXTENSION}").is_file()
+    assert (target / "a.json").is_file()
     loaded = deserialize(target)
     assert isinstance(loaded, LazyDict)
     assert dict(loaded) == {"a": 1}
@@ -259,7 +259,7 @@ def test_serialize_accepts_target_with_extension(tmp_path: Path) -> None:
     serialize({"a": 1}, target)
 
     assert (tmp_path / f"x.json{TIDYRUN_METADATA_EXTENSION}").is_file()
-    assert (target / '"a".json').is_file()
+    assert (target / "a.json").is_file()
 
 
 def test_deserialize_rejects_source_with_extension(tmp_path: Path) -> None:
