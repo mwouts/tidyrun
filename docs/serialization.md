@@ -1,8 +1,16 @@
-# TidyRun Serialization Framework
+# TidyRun Serialization Guide
 
 ## Overview
 
-The TidyRun serialization framework provides a comprehensive, extensible system for storing and retrieving Python objects—including nested dictionaries, DataFrames, Series, and arbitrary Python objects—using a filesystem hierarchy. It is designed for DAG (Directed Acyclic Graph) workflow outputs where data is hierarchically organized and often needs lazy access patterns.
+This page covers serialization only: storing and retrieving Python objects
+(`serialize`, `deserialize`, metadata, encoders, and `LazyDict`).
+
+For deferred-compute APIs (`DAG`, `Job`, `ParametrizedJob`) and DAG execution
+patterns, see the dedicated [DAG Guide](dag.md).
+
+The TidyRun serialization framework provides a comprehensive, extensible system
+for storing and retrieving Python objects, including nested dictionaries,
+DataFrames, Series, and arbitrary Python objects, using a filesystem hierarchy.
 
 ### Key Features
 
@@ -11,6 +19,7 @@ The TidyRun serialization framework provides a comprehensive, extensible system 
 - **Lazy Evaluation**: Directories deserialize into `LazyDict` objects that load values on-demand on each access
 - **Optional S3 Support**: `s3://...` locations work when the `boto3` extra is installed
 - **Recursive Concatenation**: `LazyDict.concat()` method provides pandas-style aggregation across nested structures
+- **Parallel Leaf Loading**: `LazyDict.concat(max_workers=...)` can load selected leaf values concurrently
 - **Fallback Chain**: Intelligent fallback routing (e.g., parquet → HDF5 when parquet encoding fails)
 - **Extensible Pipeline**: Users can provide custom encoder sequences and compose encoders
 - **Direct Import Path**: Use `tidyrun.serialization` for the serialization API
@@ -68,6 +77,12 @@ metrics_1 = loaded["run_1"]["metrics"]  # Loaded only when accessed
 full_dict = loaded.to_dict()  # Materializes all nested values
 ```
 
+### DAG APIs
+
+For deferred-compute APIs (`DAG`, `Job`, `ParametrizedJob`) and local
+multithreaded DAG evaluation, see the dedicated DAG page:
+[DAG Guide](dag.md).
+
 ### Optional S3 Support
 
 TidyRun can read and write `s3://bucket/prefix/...` locations when the optional S3 dependency is installed:
@@ -113,6 +128,12 @@ totals = loaded.concat(
 combined = loaded.concat(
     names=["run_id"],
     select=lambda path: path[0] in ["run_1", "run_2"]
+)
+
+# Parallel loading of leaf values (useful when leaf files are large)
+combined = loaded.concat(
+    names=["run_id"],
+    max_workers=8,
 )
 
 # select(path) argument:
@@ -197,7 +218,7 @@ comparison_table = runs.concat(names=["exp_id"])
 | `serialize(value, target, encoders=None)` | Save a value to disk |
 | `deserialize(source, encoders=None)` | Load a value from disk |
 | `LazyDict.to_dict()` | Materialize a nested `LazyDict` |
-| `LazyDict.concat(names, transform, select)` | Recursively concatenate DataFrames |
+| `LazyDict.concat(names, transform, select, max_workers=None)` | Recursively concatenate DataFrames with optional parallel leaf loading |
 | `encode_key(key)` | Encode a Python type to a filename-safe key |
 | `decode_key(name)` | Decode a stored key name |
 
@@ -249,6 +270,7 @@ suffix = ".parquet"
 ```
 
 This metadata:
+
 - Tracks the encoding format used
 - Enables schema versioning for future compatibility
 - Allows deserialization without requiring file extension guessing
@@ -445,13 +467,29 @@ Encodes a simple Python type to a path-safe string using TOML.
 
 **Supported types:** str, int, float, bool, date, datetime, time
 
+String keys are encoded to preserve round-trip type safety. Plain strings are
+left unquoted when safe (for example, `"hello" -> "hello"`). Strings that
+would otherwise be interpreted as another TOML type (for example `"true"`,
+`"42"`, or date-like values) are TOML-quoted to ensure they decode back to
+strings.
+
+Encoded keys are used as path parts, so they must satisfy these constraints:
+
+- Non-empty
+- No `/` or `\\`
+- Must not start with `.`
+- Must not end with `.tidyrun`
+
 ```python
+from datetime import date, datetime
 from tidyrun.keys import encode_key, decode_key
 
 encoded = encode_key(42)                    # "42"
-encoded = encode_key("hello")               # '"hello"'
+encoded = encode_key("hello")               # "hello"
+encoded = encode_key("true")                # '"true"'
 encoded = encode_key(True)                  # "true"
-encoded = encode_key(datetime(2026, 5, 10))  # "2026-05-10T00:00:00"
+encoded = encode_key(date(2026, 5, 10))     # "2026-05-10"
+encoded = encode_key(datetime(2026, 5, 10, 13, 37, 42))  # "2026-05-10T13:37:42"
 ```
 
 ### `decode_key(name) -> Key`
@@ -459,7 +497,8 @@ encoded = encode_key(datetime(2026, 5, 10))  # "2026-05-10T00:00:00"
 Decodes a key name back to its original Python type.
 
 ```python
-original = decode_key('"hello"')  # "hello"
+original = decode_key("hello")    # "hello"
+original = decode_key('"true"')   # "true"
 original = decode_key("42")       # 42
 ```
 

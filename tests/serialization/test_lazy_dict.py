@@ -8,6 +8,17 @@ from tidyrun.constants import TIDYRUN_METADATA_EXTENSION
 from tidyrun.serialization import LazyDict, deserialize, serialize
 
 
+def test_lazy_dict_ipython_key_completions_returns_string_keys(tmp_path: Path) -> None:
+    target = tmp_path / "ipython_completion"
+    serialize({"alpha": 1, "beta": 2}, target)
+
+    loaded = deserialize(target)
+    assert isinstance(loaded, LazyDict)
+
+    completions = loaded._ipython_key_completions_()
+    assert sorted(completions) == ["alpha", "beta"]
+
+
 def test_lazy_dict_concat_nested_dataframes(tmp_path: Path) -> None:
     pd = pytest.importorskip("pandas")
     pytest.importorskip("pyarrow", reason="Parquet engine is required for this test")
@@ -238,3 +249,132 @@ def test_deserialize_parent_folder_with_subfolders_containing_parquets(
     # Verify the concatenation worked
     assert list(concatenated.index.names) == ["subfolder", "file", None]
     assert list(concatenated["col"]) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+
+def test_lazy_dict_concat_drops_none_level_names(tmp_path: Path) -> None:
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow", reason="Parquet engine is required for this test")
+
+    value = {
+        "A": {
+            "x": pd.DataFrame({"v": [1, 2]}),
+            "y": pd.DataFrame({"v": [3, 4]}),
+        },
+        "B": {
+            "z": pd.DataFrame({"v": [5, 6]}),
+        },
+    }
+
+    target = tmp_path / "concat_drop_level"
+    serialize(value, target)
+    loaded = deserialize(target)
+    assert isinstance(loaded, LazyDict)
+
+    # Use None for the second level to drop it
+    concatenated = loaded.concat(names=["outer", None])
+
+    # Only outer level should be in the index
+    assert list(concatenated.index.names) == ["outer", None]
+    # Inner level should be aggregated
+    assert list(concatenated["v"]) == [1, 2, 3, 4, 5, 6]
+
+
+def test_lazy_dict_concat_drops_multiple_none_level_names(tmp_path: Path) -> None:
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow", reason="Parquet engine is required for this test")
+
+    value = {
+        "A": {
+            "x": pd.DataFrame({"v": [1, 2]}),
+            "y": pd.DataFrame({"v": [3, 4]}),
+        },
+        "B": {
+            "z": pd.DataFrame({"v": [5, 6]}),
+        },
+    }
+
+    target = tmp_path / "concat_drop_multiple_levels"
+    serialize(value, target)
+    loaded = deserialize(target)
+    assert isinstance(loaded, LazyDict)
+
+    # Use None for both levels to drop them all
+    concatenated = loaded.concat(names=[None, None])
+
+    # All named levels are dropped, index should be a RangeIndex
+    assert list(concatenated["v"]) == [1, 2, 3, 4, 5, 6]
+
+
+def test_lazy_dict_concat_raises_when_lazydicts_remain_with_insufficient_names(
+    tmp_path: Path,
+) -> None:
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow", reason="Parquet engine is required for this test")
+
+    value = {
+        "A": {
+            "x": pd.DataFrame({"v": [1, 2]}),
+            "y": pd.DataFrame({"v": [3, 4]}),
+        },
+        "B": {
+            "z": pd.DataFrame({"v": [5, 6]}),
+        },
+    }
+
+    target = tmp_path / "concat_insufficient_names"
+    serialize(value, target)
+    loaded = deserialize(target)
+    assert isinstance(loaded, LazyDict)
+
+    # Only provide one name level, but we have two levels of nesting
+    with pytest.raises(ValueError, match="Encountered LazyDict at depth 1"):
+        loaded.concat(names=["outer"])
+
+
+def test_lazy_dict_concat_parallel_max_workers(tmp_path: Path) -> None:
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow", reason="Parquet engine is required for this test")
+
+    value = {
+        "A": {
+            "x": pd.DataFrame({"v": [1, 2]}),
+            "y": pd.DataFrame({"v": [3, 4]}),
+        },
+        "B": {
+            "z": pd.DataFrame({"v": [5, 6]}),
+        },
+    }
+
+    target = tmp_path / "concat_parallel"
+    serialize(value, target)
+    loaded = deserialize(target)
+    assert isinstance(loaded, LazyDict)
+
+    sequential = loaded.concat(names=["outer", "inner"])
+    parallel = loaded.concat(names=["outer", "inner"], max_workers=4)
+
+    # Results must be identical regardless of loading strategy
+    pd.testing.assert_frame_equal(sequential, parallel)
+
+
+def test_lazy_dict_concat_parallel_select(tmp_path: Path) -> None:
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow", reason="Parquet engine is required for this test")
+
+    value = {
+        "A": {"x": pd.DataFrame({"v": [1]}), "y": pd.DataFrame({"v": [2]})},
+        "B": {"z": pd.DataFrame({"v": [3]})},
+    }
+
+    target = tmp_path / "concat_parallel_select"
+    serialize(value, target)
+    loaded = deserialize(target)
+
+    result = loaded.concat(
+        names=["outer", "inner"],
+        select=lambda path: path[0] == "A",
+        max_workers=2,
+    )
+
+    assert set(result.index.get_level_values("outer")) == {"A"}
+    assert list(result["v"]) == [1, 2]

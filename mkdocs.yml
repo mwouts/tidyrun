@@ -55,9 +55,8 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Serialization:
-    - Guide: serialization.md
-    - Design Decisions: design-decisions.md
+  - DAG Guide: dag.md
+  - Serialization Guide: serialization.md
   - Contributing: contributing.md
   - Quick Start: quick_start.md
   - Changelog: changelog.md

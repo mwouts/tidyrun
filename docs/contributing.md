@@ -27,6 +27,7 @@ Thank you for your interest in contributing to TidyRun! This guide will help you
 ### Code Style
 
 TidyRun uses:
+
 - **[Ruff](https://github.com/astral-sh/ruff)** for linting and formatting
 - **[Pyright](https://github.com/microsoft/pyright)** for strict type checking
 
@@ -47,14 +48,30 @@ pixi run pytest tests/
 # Run specific test file
 pixi run pytest tests/serialization/test_api.py
 
+# AWS Batch executor unit tests (mocked client, no AWS account required)
+pixi run pytest tests/test_aws_batch_executor.py
+
+# Optional S3 round-trip serialization test (requires boto3 + moto)
+pixi run pytest tests/serialization/test_api.py -k s3_round_trip
+
+# Optional local container integration smoke test (Docker/Podman)
+RUN_CONTAINER_TESTS=1 pixi run pytest tests/test_container_runner.py
+
 # Run with coverage
 pixi run pytest --cov=src/tidyrun tests/
 ```
 
 Test structure mirrors the source code:
+
 - `tests/serialization/` — serialization module tests
 - `tests/test_keys.py` — key encoding tests
 - `tests/test_version.py` — version tests
+
+Notes:
+
+- `tests/test_aws_batch_executor.py` uses a fake Batch client and does not call AWS.
+- `tests/test_container_runner.py` is opt-in and skipped unless `RUN_CONTAINER_TESTS=1`.
+- Container tests require a working `docker` or `podman` runtime.
 
 ## Documentation
 
@@ -103,57 +120,11 @@ The output is in the `site/` directory.
 - **Cross-links**: Link to related sections and code
 - **Type Information**: Include type hints in code examples
 
-## Pull Request Process
-
-1. **Create a feature branch:**
-   ```bash
-   git checkout -b feature/description
-   ```
-
-2. **Make your changes** and commit with clear messages:
-   ```bash
-   git commit -m "Add feature: description"
-   ```
-
-3. **Push to your fork:**
-   ```bash
-   git push origin feature/description
-   ```
-
-4. **Open a Pull Request** with:
-   - Clear title and description
-   - Reference to any related issues
-   - Summary of changes
-   - Confirmation that tests pass
-
-5. **Respond to reviews** and make requested changes
-
-## Areas for Contribution
-
-### High Priority
-
-- **Remote Storage**: Add additional remote backends via fsspec integration
-- **Documentation**: Expand examples and API documentation
-- **Performance**: Optimize LazyDict traversal for very large nested structures
-
-### Medium Priority
-
-- **Virtual Keys**: Add glob-like pattern matching for LazyDict keys
-- **Schema Hinting**: Pre-load Parquet metadata to detect schema mismatches
-- **Custom Metadata**: Allow users to store arbitrary metadata
-
-### Low Priority
-
-- **Alternative Encoders**: Support additional formats (Arrow, NetCDF, etc.)
-- **Async Support**: Add async serialize/deserialize
-- **Memory Use**: Reduce memory overhead for large nested structures
-
 ## Questions?
 
 - Open an [issue](https://github.com/mwouts/tidyrun/issues) with a `question` label
 - Check existing [discussions](https://github.com/mwouts/tidyrun/discussions)
-- Review the [design decisions](design-decisions.md) for architecture context
 
 ## Code of Conduct
 
-We're committed to fostering a welcoming community. Please be respectful and constructive in all interactions.
+Please be respectful and constructive in all interactions.
