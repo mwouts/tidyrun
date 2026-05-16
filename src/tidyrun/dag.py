@@ -358,15 +358,20 @@ def _resolve_arg(plan_dir: Path, spec: Mapping[str, Any]) -> Any:
             typed_value = cast(list[object], value)
             for item in typed_value:
                 if isinstance(item, tuple):
-                    tuple_item_any = cast(tuple[object, ...], item)
-                    if len(tuple_item_any) != 2:
+                    pair = cast(tuple[object, ...], item)
+                    if len(pair) != 2:
                         continue
-                    tuple_item = tuple_item_any
-                    if (
-                        isinstance(tuple_item[0], str)
-                        and tuple_item[0] == literal_job_id
-                    ):
-                        return tuple_item[1]
+                    key, item_value = pair
+                elif isinstance(item, list):
+                    pair = cast(list[object], item)
+                    if len(pair) != 2:
+                        continue
+                    key, item_value = pair
+                else:
+                    continue
+
+                if isinstance(key, str) and key == literal_job_id:
+                    return item_value
             raise ValueError(
                 f"Missing grouped literal value for job_id {literal_job_id!r}"
             )
