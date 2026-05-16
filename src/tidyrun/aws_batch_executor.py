@@ -6,7 +6,7 @@ import json
 import re
 import threading
 import time
-from typing import Any, Mapping, Protocol, cast
+from typing import Any, Mapping, Optional, Protocol, cast
 
 
 class _BatchClient(Protocol):
@@ -223,7 +223,7 @@ class AwsBatchExecutor(Executor):
                 if not jobs:
                     raise RuntimeError(f"AWS Batch job not found: {submitted.job_id}")
                 job = jobs[0]
-                status = cast(str | None, job.get("status"))
+                status = cast(Optional[str], job.get("status"))
                 if status in self._TERMINAL_SUCCESS:
                     future.set_result(None)
                     return
