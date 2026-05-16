@@ -11,9 +11,9 @@ import sys
 import threading
 import time
 import uuid
-from typing import Any
+from typing import Any, Union
 
-SbatchOptions = Mapping[str, str | int]
+SbatchOptions = Mapping[str, Union[str, int]]
 
 _RUNNER_SCRIPT_NAME = "_tidyrun_slurm_runner.py"
 _RUNNER_SCRIPT = """import os

@@ -2,7 +2,7 @@
 
 All notable changes to TidyRun are documented in this file.
 
-## [0.0.4.dev0] — (unreleased)
+## [0.0.4] — (2026-05-16)
 
 ### Added
 
