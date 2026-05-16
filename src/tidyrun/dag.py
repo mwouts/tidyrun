@@ -15,12 +15,15 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 from typing import Any, cast, Literal, Union
+from urllib.parse import urlparse
 
 import toml
 
 from tidyrun.job import Job, ParametrizedJob
 from tidyrun.keys import Key, decode_key, encode_key
+from tidyrun.serialization.s3 import is_s3_location, upload_local_tree_to_s3
 
 Node = Union[Job, ParametrizedJob, "DAG"]
 ProgressCallback = Callable[[str], None]
@@ -66,6 +69,14 @@ class DAGExecutionError(Exception):
 
 def _to_path(value: Any) -> Path:
     return value if isinstance(value, Path) else Path(value)
+
+
+def _s3_leaf_name(location: str) -> str:
+    parsed = urlparse(location)
+    key = parsed.path.lstrip("/")
+    if parsed.scheme != "s3" or not parsed.netloc or not key:
+        raise ValueError(f"Invalid S3 location: {location!r}")
+    return key.rsplit("/", 1)[-1]
 
 
 def _default_progress_callback(message: str) -> None:
@@ -519,7 +530,16 @@ class DAG(Mapping[Key, Node]):
         )
         reporter.info(f"starting ({total_jobs} jobs)")
 
-        plan_dir = _to_path(dag_path)
+        s3_dag_path = dag_path if is_s3_location(dag_path) else None
+        tempdir: TemporaryDirectory[str] | None = None
+        temp_root: Path | None = None
+        if s3_dag_path is not None:
+            tempdir = TemporaryDirectory()
+            temp_root = Path(tempdir.name)
+            plan_dir = temp_root / _s3_leaf_name(cast(str, s3_dag_path))
+        else:
+            plan_dir = _to_path(dag_path)
+
         plan_dir.mkdir(parents=True, exist_ok=True)
         (plan_dir / "definitions").mkdir(parents=True, exist_ok=True)
         (plan_dir / "inputs").mkdir(parents=True, exist_ok=True)
@@ -532,6 +552,7 @@ class DAG(Mapping[Key, Node]):
         preferred_job_ids: dict[int, str] = {}
         shared_literal_paths: dict[tuple[str, str], str] = {}
         parameter_literal_maps: dict[tuple[str, str], list[tuple[str, Any]]] = {}
+        collected_job_ids_cache: dict[int, frozenset[str]] = {}
         written_callables: set[Path] = set()
         synthetic_counter = 0
 
@@ -539,13 +560,19 @@ class DAG(Mapping[Key, Node]):
             if isinstance(node, Job):
                 preferred_job_ids[id(node)] = _job_id_from_path((key,))
 
-        def _collect_job_ids(ref: Mapping[str, Any]) -> set[str]:
+        def _collect_job_ids(ref: Mapping[str, Any]) -> frozenset[str]:
+            cached = collected_job_ids_cache.get(id(ref))
+            if cached is not None:
+                return cached
+
             kind = ref.get("kind")
             if kind == "job":
                 job_id = ref.get("job_id")
                 if not isinstance(job_id, str):
                     raise ValueError(f"Invalid job reference: {ref!r}")
-                return {job_id}
+                resolved = frozenset({job_id})
+                collected_job_ids_cache[id(ref)] = resolved
+                return resolved
 
             if kind == "group":
                 raw_entries = ref.get("entries")
@@ -555,7 +582,9 @@ class DAG(Mapping[Key, Node]):
                 collected: set[str] = set()
                 for entry in entries.values():
                     collected.update(_collect_job_ids(cast(Mapping[str, Any], entry)))
-                return collected
+                resolved = frozenset(collected)
+                collected_job_ids_cache[id(ref)] = resolved
+                return resolved
 
             raise ValueError(f"Unknown reference kind: {kind!r}")
 
@@ -768,6 +797,18 @@ class DAG(Mapping[Key, Node]):
             toml.dumps(manifest),  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
             encoding="utf-8",
         )
+
+        if s3_dag_path is not None:
+            assert temp_root is not None
+            upload_local_tree_to_s3(temp_root, cast(str, s3_dag_path))
+            assert tempdir is not None
+            tempdir.cleanup()
+            reporter.info("done")
+            return _to_path(cast(str, s3_dag_path))
+
+        if tempdir is not None:
+            tempdir.cleanup()
+
         reporter.info("done")
         return plan_dir
 

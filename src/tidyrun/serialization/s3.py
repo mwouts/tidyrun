@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
@@ -62,13 +63,24 @@ def upload_local_tree_to_s3(local_root: Path, location: str) -> None:
     prefix = _prefix_from_key(key)
     s3 = boto3.client("s3")
 
-    for path in sorted(local_root.rglob("*")):
-        if not path.is_file():
-            continue
+    paths = [path for path in sorted(local_root.rglob("*")) if path.is_file()]
+    if not paths:
+        return
 
+    def _upload(path: Path) -> None:
         relative_path = path.relative_to(local_root).as_posix()
         remote_key = _join_remote_key(prefix, relative_path)
         s3.upload_file(str(path), bucket, remote_key)
+
+    if len(paths) == 1:
+        _upload(paths[0])
+        return
+
+    max_workers = min(32, len(paths))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_upload, path) for path in paths]
+        for future in futures:
+            future.result()
 
 
 def download_s3_tree_to_local_root(location: str, local_root: Path) -> None:

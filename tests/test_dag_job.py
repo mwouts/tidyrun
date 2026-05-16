@@ -264,6 +264,25 @@ def test_materialize_plan_layout_for_single_and_parametrized_jobs(
     assert definition_b["args"]["sep"]["path"] == "inputs/grid/sep"
 
 
+def test_materialize_supports_s3_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _capture_upload(local_root: Path, location: str) -> None:
+        captured["local_root"] = local_root
+        captured["location"] = location
+        captured["has_manifest"] = (local_root / "run-plan" / "plan.tidyrun").is_file()
+
+    monkeypatch.setattr("tidyrun.dag.upload_local_tree_to_s3", _capture_upload)
+
+    dag = DAG({"a": Job(func=lambda: 1, kwargs={})})
+    location = "s3://unit-test-bucket/plans/run-plan"
+    plan_dir = dag.materialize(location)
+
+    assert plan_dir == Path(location)
+    assert captured["location"] == location
+    assert captured["has_manifest"] is True
+
+
 def test_dag_evaluate_with_local_threads(tmp_path: Path) -> None:
     dag = DAG()
     for i in range(8):
