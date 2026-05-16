@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from tidyrun.constants import TIDYRUN_DEFAULT_HASH_ALGORITHM
+
 from .encoders import (
     can_encode_with_hdf5,
     can_encode_with_parquet,
@@ -21,7 +23,13 @@ from .encoders import (
     is_json_serializable,
     is_mapping,
 )
-from .metadata import metadata_exists, read_metadata, suffix_for_encoder, write_metadata
+from .metadata import (
+    checksum_for_path,
+    metadata_exists,
+    read_metadata,
+    suffix_for_encoder,
+    write_metadata,
+)
 from .paths import to_local_path, with_suffix
 from .s3 import deserialize_from_s3, is_s3_location, serialize_to_s3
 from .types import (
@@ -155,10 +163,28 @@ def serialize(
             f"No encoder found for value of type {type(value).__name__!r}"
         )
 
+    payload_path = (
+        base_path
+        if suffix_for_encoder(selected_encoder.name) == ""
+        else with_suffix(base_path, suffix_for_encoder(selected_encoder.name))
+    )
+    output_digest = checksum_for_path(
+        payload_path,
+        algorithm=TIDYRUN_DEFAULT_HASH_ALGORITHM,
+    )
+
     write_metadata(
         base_path,
         encoding=selected_encoder.name,
         suffix=suffix_for_encoder(selected_encoder.name),
+        metadata_extra={
+            "checksums": {
+                "output": {
+                    "algorithm": TIDYRUN_DEFAULT_HASH_ALGORITHM,
+                    "digest": output_digest,
+                }
+            }
+        },
     )
 
 

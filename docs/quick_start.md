@@ -6,22 +6,19 @@ This directory contains the core documentation for the TidyRun project. The site
 
 - **[index.md](index.md)** — Home page with overview and quick start
 - **[serialization.md](serialization.md)** — Comprehensive serialization framework guide
-  - Quick start examples
-  - Complete API reference
-  - Architecture overview
-  - Performance considerations
-  - Real-world examples
-
-- **[design-decisions.md](design-decisions.md)** — Technical architecture deep-dive
-  - 11 key architectural decisions
-  - Rationale and trade-offs for each
-  - Alternatives considered
-
+    - Quick start examples
+    - Complete API reference
+    - Architecture overview
+    - Performance considerations
+    - Real-world examples
 - **[contributing.md](contributing.md)** — Contributing guidelines
-  - Development setup
-  - Testing procedures
-  - Documentation guidelines
-
+    - Development setup
+    - Testing procedures
+    - Documentation guidelines
+- **[dag.md](dag.md)** — DAG compute guide
+    - Job, ParametrizedJob, and DAG primitives
+    - Execution modes and parallelism
+    - Materialized plans and failure handling
 - **[quick_start.md](quick_start.md)** — Local docs workflow and publishing notes
 
 ## Other Documentation
@@ -32,6 +29,7 @@ This directory contains the core documentation for the TidyRun project. The site
 ## Changelog
 
 The [Changelog](changelog.md) is symlinked from the root `CHANGELOG.md` file. This ensures:
+
 - **Single source of truth**: The changelog lives in one place
 - **Always in sync**: Documentation automatically reflects the latest version history
 - **Version tracking**: Full history of features, changes, and known issues
@@ -50,6 +48,23 @@ Or to use the dedicated docs environment:
 ```bash
 pixi shell -e docs
 ```
+
+### Notebook Workflow
+
+For interactive experimentation with TidyRun in Jupyter:
+
+```bash
+# Register a kernel to the development environment
+pixi run -e kernel register-kernel
+
+# Launch JupyterLab
+pixi run -e notebook jupyter lab
+```
+
+This setup uses two Pixi environments:
+
+- `notebook`: hosts the JupyterLab UI
+- `kernel`: provides the Python kernel with `ipykernel` and your editable `tidyrun` install
 
 ### Live Preview
 
@@ -85,10 +100,12 @@ Visit http://localhost:8000 to preview.
 ## Deployment
 
 Documentation is automatically deployed to GitHub Pages when:
+
 - Changes are pushed to `main` or `serialize_v01` branch
 - Changes affect `docs/`, `mkdocs.yml`, or the workflow itself
 
 The GitHub Actions workflow (`.github/workflows/deploy-docs.yml`) handles:
+
 1. Building the documentation with mkdocs
 2. Uploading to GitHub Pages artifact storage
 3. Deploying to the live GitHub Pages site
@@ -108,6 +125,7 @@ This builds and pushes the `site/` directory to the `gh-pages` branch.
 ## Contributing to Documentation
 
 When adding or updating documentation:
+
 - Keep examples practical and runnable
 - Include trade-offs and design rationale
 - Link to relevant code sections
@@ -155,6 +173,7 @@ result = deserialize("./output")
 ## Configuration
 
 The documentation is configured in `mkdocs.yml` at the project root:
+
 - **Theme:** Material for MkDocs with light/dark mode toggle
 - **Search:** Full-text search enabled
 - **Code highlighting:** Syntax highlighting with copy buttons

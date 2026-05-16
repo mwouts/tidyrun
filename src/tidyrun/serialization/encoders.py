@@ -243,20 +243,26 @@ def is_json_serializable(value: Any) -> bool:
 
 def encode_value_as_pickle(value: Any, target_file: Location) -> None:
     """Last-resort encoder: serialize any Python object with pickle."""
-    import pickle
+    try:
+        import cloudpickle as pickle_backend  # pyright: ignore[reportMissingImports]
+    except ImportError:
+        import pickle as pickle_backend
 
     file_path = with_suffix(to_local_path(target_file), DEFAULT_PICKLE_EXTENSION)
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
     with file_path.open("wb") as f:
-        pickle.dump(value, f)
+        pickle_backend.dump(value, f)
 
 
 def decode_value_from_pickle(source_file: Location) -> Any:
     """Decode a value previously written with pickle."""
-    import pickle
+    try:
+        import cloudpickle as pickle_backend  # pyright: ignore[reportMissingImports]
+    except ImportError:
+        import pickle as pickle_backend
 
     file_path = with_suffix(to_local_path(source_file), DEFAULT_PICKLE_EXTENSION)
 
     with file_path.open("rb") as f:
-        return pickle.load(f)
+        return pickle_backend.load(f)

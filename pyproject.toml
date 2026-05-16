@@ -25,10 +25,11 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Typing :: Typed",
 ]
-version = "0.0.3"
+version = "0.0.4"
 requires-python = ">= 3.9"
 dependencies = [
     "toml>=0.10",
+    "cloudpickle>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -62,6 +63,7 @@ s3 = [
 
 [project.urls]
 Homepage = "https://github.com/mwouts/tidyrun"
+Documentation = "https://mwouts.github.io/tidyrun/"
 Repository = "https://github.com/mwouts/tidyrun.git"
 Issues = "https://github.com/mwouts/tidyrun/issues"
 
@@ -96,11 +98,37 @@ tidyrun = {path = ".", extras = ["dev"], editable = true}
 
 [tool.pixi.feature.build.pypi-dependencies]
 build = "*"
+twine = "*"
+
+[tool.pixi.feature.build.tasks]
+# pixi run -e build publish-test
+publish-test = { depends-on = ["build-dist"], cmd = "twine upload --repository testpypi dist/*" }
+build-dist = "rm -rf dist && python -m build"
+
+[tool.pixi.feature.notebook.dependencies]
+jupyterlab = ">=4"
+
+[tool.pixi.feature.kernel.dependencies]
+ipykernel = ">=6"
+
+[tool.pixi.feature.kernel.tasks]
+register-kernel = "python -m ipykernel install --user --name tidyrun-kernel --display-name TidyRun"
+
+[tool.pixi.feature.pdf.pypi-dependencies]
+playwright = "*"
+pypdf = "*"
+
+[tool.pixi.feature.pdf.tasks]
+install-pdf-browser = "playwright install chromium"
+docs-pdf = "mkdocs build -q && python scripts/export_docs_pdf.py"
 
 [tool.pixi.environments]
 default = { solve-group = "default" }
-build = { features = ["build"], solve-group = "default" }
+build = { features = ["build"], no-default-feature = false, solve-group = "default" }
 docs = { solve-group = "default" }
+notebook = { features = ["notebook"], solve-group = "default" }
+kernel = { features = ["kernel"], solve-group = "default" }
+pdf = { features = ["pdf"], solve-group = "default" }
 
 [tool.pixi.dependencies]
 toml = "*"
@@ -112,3 +140,7 @@ mkdocs-material = ">=9.0"
 mkdocstrings = ">=0.24"
 mkdocstrings-python = ">=1.0"
 pymdown-extensions = ">=10.0"
+pytest-xdist = ">=3.8.0,<4"
+
+[tool.pixi.tasks]
+docs-serve-local = { cmd = "mkdocs serve -a 0.0.0.0:8000", description = "Serve docs on the local network (open http://<your-ip>:8000 on your phone)" }

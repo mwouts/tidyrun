@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 import toml
 
-from tidyrun.constants import TIDYRUN_METADATA_EXTENSION, TIDYRUN_METADATA_VERSION
+from tidyrun.constants import (
+    TIDYRUN_DEFAULT_HASH_ALGORITHM,
+    TIDYRUN_METADATA_EXTENSION,
+    TIDYRUN_METADATA_VERSION,
+)
+from tidyrun.serialization.metadata import checksum_for_path
 from tidyrun.serialization import (
     GoToNextEncoderException,
     LazyDict,
@@ -32,6 +37,12 @@ def test_serialize_deserialize_scalar_json(tmp_path: Path) -> None:
     assert root_metadata.is_file()
     root_meta_data = toml.loads(root_metadata.read_text(encoding="utf-8"))
     assert root_meta_data["version"] == TIDYRUN_METADATA_VERSION
+    checksum = root_meta_data["checksums"]["output"]
+    assert checksum["algorithm"] == TIDYRUN_DEFAULT_HASH_ALGORITHM
+    expected_digest = checksum_for_path(
+        target, algorithm=TIDYRUN_DEFAULT_HASH_ALGORITHM
+    )
+    assert checksum["digest"] == expected_digest
 
     assert (target / f"a{TIDYRUN_METADATA_EXTENSION}").is_file()
     assert (target / "a.json").is_file()
@@ -125,6 +136,54 @@ def test_serialize_deserialize_s3_round_trip() -> None:
         loaded = deserialize(target)
         assert isinstance(loaded, LazyDict)
         assert loaded.to_dict() == value
+
+
+def test_deserialize_s3_without_metadata_is_lazy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("boto3")
+    pytest.importorskip("moto")
+
+    import boto3  # pyright: ignore[reportMissingImports]
+    from moto import mock_aws  # pyright: ignore[reportMissingImports]
+
+    value = {
+        "a": {"x": 1},
+        "b": {"y": 2},
+    }
+
+    with mock_aws():
+        client = boto3.client("s3", region_name="us-east-1")
+        bucket_name = "tidyrun-test-bucket"
+        client.create_bucket(Bucket=bucket_name)
+
+        target = f"s3://{bucket_name}/results/run_lazy"
+        serialize(value, target)
+
+        response = client.list_objects_v2(Bucket=bucket_name, Prefix="results/run_lazy")
+        for item in response.get("Contents", []):
+            key = item["Key"]
+            if key.endswith(TIDYRUN_METADATA_EXTENSION):
+                client.delete_object(Bucket=bucket_name, Key=key)
+
+        download_calls = 0
+        original_download = client.download_file
+
+        def _counting_download(bucket: str, key: str, filename: str) -> None:
+            nonlocal download_calls
+            download_calls += 1
+            original_download(bucket, key, filename)
+
+        monkeypatch.setattr(client, "download_file", _counting_download)
+        monkeypatch.setattr(boto3, "client", lambda *_args, **_kwargs: client)
+
+        loaded = deserialize(target)
+        assert isinstance(loaded, LazyDict)
+        # Top-level deserialize should not download every payload eagerly.
+        assert download_calls <= 1
+
+        _ = loaded["a"]
+        assert download_calls > 0
 
 
 def test_serialize_non_json_value_uses_pickle(tmp_path: Path) -> None:
@@ -265,3 +324,24 @@ def test_serialize_accepts_target_with_extension(tmp_path: Path) -> None:
 def test_deserialize_rejects_source_with_extension(tmp_path: Path) -> None:
     with pytest.raises(TidyRunDeserializationError):
         deserialize(tmp_path / "x.json")
+
+
+def test_deserialize_ignores_optional_metadata_sections(tmp_path: Path) -> None:
+    target = tmp_path / "with_optional_sections"
+    serialize({"a": 1}, target)
+
+    metadata_file = tmp_path / f"with_optional_sections{TIDYRUN_METADATA_EXTENSION}"
+    metadata = toml.loads(metadata_file.read_text(encoding="utf-8"))
+    metadata["provenance"] = {
+        "job_id": "root/a",
+        "definition_ref": "definitions/root/a.tidyrun",
+    }
+    metadata["job_definition"] = {
+        "callable_module": "my_pkg.jobs",
+        "callable_qualname": "transform",
+    }
+    metadata_file.write_text(toml.dumps(metadata), encoding="utf-8")
+
+    loaded = deserialize(target)
+    assert isinstance(loaded, LazyDict)
+    assert loaded.to_dict() == {"a": 1}
