@@ -6,7 +6,13 @@ import json
 import re
 import threading
 import time
-from typing import Any, Mapping, cast
+from typing import Any, Mapping, Protocol, cast
+
+
+class _BatchClient(Protocol):
+    def submit_job(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def describe_jobs(self, *, jobs: list[str]) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -46,7 +52,7 @@ class AwsBatchExecutor(Executor):
         *,
         poll_interval_seconds: float = 1.0,
         region_name: str | None = None,
-        batch_client: Any | None = None,
+        batch_client: _BatchClient | None = None,
     ) -> None:
         self._job_queue = job_queue
         self._job_definition = job_definition
@@ -57,13 +63,17 @@ class AwsBatchExecutor(Executor):
 
         if batch_client is None:
             try:
-                import boto3
+                import boto3  # pyright: ignore[reportMissingTypeStubs]
             except ImportError as exc:  # pragma: no cover - depends on optional extra
                 raise ImportError(
                     "AwsBatchExecutor requires boto3. "
                     "Install with `pip install tidyrun[s3]`."
                 ) from exc
-            self._batch_client = boto3.client("batch", region_name=region_name)
+            boto3_client_factory = cast(Any, boto3)
+            self._batch_client = cast(
+                _BatchClient,
+                boto3_client_factory.client("batch", region_name=region_name),
+            )
         else:
             self._batch_client = batch_client
 
@@ -129,7 +139,7 @@ class AwsBatchExecutor(Executor):
             "parameters": parameters,
         }
 
-        response = cast(dict[str, Any], self._batch_client.submit_job(**submit_kwargs))
+        response = self._batch_client.submit_job(**submit_kwargs)
         batch_job_id = response.get("jobId")
         if not isinstance(batch_job_id, str):
             raise RuntimeError(f"Invalid AWS Batch submit response: {response!r}")
@@ -188,7 +198,7 @@ class AwsBatchExecutor(Executor):
                 {k: str(v) for k, v in sbatch_options.items()}
             )
 
-        response = cast(dict[str, Any], self._batch_client.submit_job(**submit_kwargs))
+        response = self._batch_client.submit_job(**submit_kwargs)
         batch_job_id = response.get("jobId")
         if not isinstance(batch_job_id, str):
             raise RuntimeError(f"Invalid AWS Batch submit response: {response!r}")
@@ -208,10 +218,7 @@ class AwsBatchExecutor(Executor):
         future = submitted.future
         while not self._shutdown and not future.done():
             try:
-                response = cast(
-                    dict[str, Any],
-                    self._batch_client.describe_jobs(jobs=[submitted.job_id]),
-                )
+                response = self._batch_client.describe_jobs(jobs=[submitted.job_id])
                 jobs = cast(list[dict[str, Any]], response.get("jobs", []))
                 if not jobs:
                     raise RuntimeError(f"AWS Batch job not found: {submitted.job_id}")

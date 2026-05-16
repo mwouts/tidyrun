@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tidyrun.dag import DAG
 from tidyrun.job import Job
+from tidyrun.keys import Key
 
 
 def _const_two() -> int:
@@ -145,7 +146,7 @@ def test_process_mode_spawns_separate_processes(tmp_path: Path) -> None:
 def test_thread_mode_is_faster_than_subprocess_for_small_jobs(tmp_path: Path) -> None:
     """Benchmark that thread mode is faster than subprocess for small jobs."""
     # Create multiple small jobs
-    jobs = {
+    jobs: dict[Key, Job] = {
         f"job_{i}": Job(func=_slow_job, kwargs={"delay_seconds": 0.01})
         for i in range(5)
     }
@@ -179,7 +180,7 @@ def test_thread_mode_is_faster_than_subprocess_for_small_jobs(tmp_path: Path) ->
 
 def test_parallel_execution_with_thread_mode(tmp_path: Path) -> None:
     """Test that thread mode can parallelize job execution with max_workers."""
-    jobs = {
+    jobs: dict[Key, Job] = {
         f"job_{i}": Job(func=_slow_job, kwargs={"delay_seconds": 0.05})
         for i in range(4)
     }

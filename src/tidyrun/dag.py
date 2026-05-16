@@ -191,7 +191,7 @@ def _job_id_from_path_hint(path_hint: tuple[Any, ...]) -> str | None:
     non-user path fragments (for example owner job ids and argument markers).
     In those cases we return ``None`` rather than raising.
     """
-    key_path = tuple(
+    key_path: tuple[Key, ...] = tuple(
         value
         for value in path_hint
         if isinstance(
@@ -200,7 +200,7 @@ def _job_id_from_path_hint(path_hint: tuple[Any, ...]) -> str | None:
         )
     )
     try:
-        return _job_id_from_path(cast(tuple[Key, ...], key_path))
+        return _job_id_from_path(key_path)
     except ValueError:
         return None
 
@@ -300,11 +300,13 @@ def load_job_inputs(job_definition: Mapping[str, Any], dag_path: Any) -> dict[st
     kwargs_table = job_definition.get("args")
     if not isinstance(kwargs_table, dict):
         raise ValueError("Invalid args section in job definition")
+    typed_kwargs_table = cast(dict[str, Any], kwargs_table)
     plan_dir = _to_path(dag_path)
-    return {
-        name: _resolve_arg(plan_dir, cast(Mapping[str, Any], spec))
-        for name, spec in kwargs_table.items()
-    }
+    resolved_inputs: dict[str, Any] = {}
+    for name, raw_spec in typed_kwargs_table.items():
+        spec = cast(Mapping[str, Any], raw_spec)
+        resolved_inputs[name] = _resolve_arg(plan_dir, spec)
+    return resolved_inputs
 
 
 def _resolve_ref_from_outputs(plan_dir: Path, ref: Mapping[str, Any]) -> Any:
@@ -318,11 +320,12 @@ def _resolve_ref_from_outputs(plan_dir: Path, ref: Mapping[str, Any]) -> Any:
         return deserialize(_job_output_base(plan_dir, _normalize_job_id(job_id)))
 
     if kind == "group":
-        entries = ref.get("entries")
-        if not isinstance(entries, dict):
+        raw_entries = ref.get("entries")
+        if not isinstance(raw_entries, dict):
             raise ValueError(f"Invalid group reference: {ref!r}")
+        entries = cast(Mapping[str, Any], raw_entries)
         return {
-            _decode_manifest_key(str(encoded_key)): _resolve_ref_from_outputs(
+            _decode_manifest_key(encoded_key): _resolve_ref_from_outputs(
                 plan_dir, cast(Mapping[str, Any], entry_ref)
             )
             for encoded_key, entry_ref in entries.items()
@@ -350,16 +353,20 @@ def _resolve_arg(plan_dir: Path, spec: Mapping[str, Any]) -> Any:
                 raise ValueError(
                     f"Missing grouped literal value for job_id {literal_job_id!r}"
                 )
-            return value[literal_job_id]
+            return cast(Any, value[literal_job_id])
         if isinstance(value, list):
-            for item in value:
-                if (
-                    isinstance(item, (tuple, list))
-                    and len(item) == 2
-                    and isinstance(item[0], str)
-                    and item[0] == literal_job_id
-                ):
-                    return item[1]
+            typed_value = cast(list[object], value)
+            for item in typed_value:
+                if isinstance(item, tuple):
+                    tuple_item_any = cast(tuple[object, ...], item)
+                    if len(tuple_item_any) != 2:
+                        continue
+                    tuple_item = tuple_item_any
+                    if (
+                        isinstance(tuple_item[0], str)
+                        and tuple_item[0] == literal_job_id
+                    ):
+                        return tuple_item[1]
             raise ValueError(
                 f"Missing grouped literal value for job_id {literal_job_id!r}"
             )
@@ -392,7 +399,7 @@ def run_materialized_job(dag_path: Any, job_id: str) -> None:
     _run_compiled_job(_to_path(dag_path), job_id)
 
 
-def _run_compiled_job_entrypoint() -> None:
+def _run_compiled_job_entrypoint() -> None:  # pyright: ignore[reportUnusedFunction]
     if len(sys.argv) != 3:
         raise ValueError("Expected arguments: <plan_dir> <job_id>")
     run_materialized_job(sys.argv[1], sys.argv[2])
@@ -536,9 +543,10 @@ class DAG(Mapping[Key, Node]):
                 return {job_id}
 
             if kind == "group":
-                entries = ref.get("entries")
-                if not isinstance(entries, dict):
+                raw_entries = ref.get("entries")
+                if not isinstance(raw_entries, dict):
                     raise ValueError(f"Invalid group reference: {ref!r}")
+                entries = cast(Mapping[str, Any], raw_entries)
                 collected: set[str] = set()
                 for entry in entries.values():
                     collected.update(_collect_job_ids(cast(Mapping[str, Any], entry)))
@@ -862,8 +870,9 @@ class DAG(Mapping[Key, Node]):
             raise ValueError(f"job_resources contains unknown DAG keys: {unknown_keys}")
 
         top_level_job_ids: dict[Key, str] = {}
-        for key, ref in top_level.items():
+        for key, raw_ref in top_level.items():
             decoded = _decode_manifest_key(key)
+            ref = cast(Mapping[str, Any], raw_ref)
             if isinstance(ref, dict) and ref.get("kind") == "job":
                 job_id = ref.get("job_id")
                 if isinstance(job_id, str):
@@ -892,9 +901,10 @@ class DAG(Mapping[Key, Node]):
 
         array_group_by_job_id: dict[str, str] = {}
         array_groups: dict[str, set[str]] = {}
-        for raw_job_id, payload in jobs_table.items():
-            if not isinstance(payload, dict):
+        for raw_job_id, raw_payload in jobs_table.items():
+            if not isinstance(raw_payload, dict):
                 continue
+            payload = cast(Mapping[str, Any], raw_payload)
             normalized_job_id = _normalize_job_id(raw_job_id)
             array_group = payload.get("array_group")
             if isinstance(array_group, str) and array_group:
@@ -948,7 +958,7 @@ class DAG(Mapping[Key, Node]):
                         remaining = set(ready)
                         remaining.update(
                             jid
-                            for jid, deps in dependencies.items()
+                            for jid in dependencies
                             if jid not in completed and jid != job_id
                         )
                         raise DAGExecutionError(

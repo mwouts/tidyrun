@@ -84,6 +84,11 @@ artifacts = [
 
 [tool.pyright]
 typeCheckingMode = "standard"
+include = [
+    "src/tidyrun",
+    "tests",
+    "docs",
+    ]
 strict = [
     "docs",
     "src/tidyrun/",

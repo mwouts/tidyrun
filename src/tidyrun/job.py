@@ -46,14 +46,14 @@ def _validate_callable_bindings(
         for name, param in parameters.items()
         if param.kind
         in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-        and param.default is inspect._empty
+        and param.default is inspect.Parameter.empty
     }
 
     positional_only_required = [
         name
         for name, param in parameters.items()
         if param.kind == inspect.Parameter.POSITIONAL_ONLY
-        and param.default is inspect._empty
+        and param.default is inspect.Parameter.empty
     ]
     if positional_only_required:
         names = ", ".join(positional_only_required)

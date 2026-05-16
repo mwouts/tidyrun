@@ -200,7 +200,7 @@ def _ensure_local_base_from_s3(
         )
         local_base = local_root / local_base_rel
         metadata = read_metadata(local_base)
-        suffix = cast(str, metadata.get("suffix", ""))
+        suffix = metadata.get("suffix", "")
         if suffix:
             payload_key = f"{remote_base_key}{suffix}"
             payload_rel = payload_key[len(prefix) + 1 :] if prefix else payload_key
@@ -266,8 +266,8 @@ def deserialize_from_s3(
 
     if metadata_downloaded:
         metadata = read_metadata(local_base)
-        encoding = cast(str | None, metadata.get("encoding"))
-        suffix = cast(str | None, metadata.get("suffix"))
+        encoding = metadata.get("encoding")
+        suffix = metadata.get("suffix")
 
         if encoding == "dict-folder" and suffix == "":
             local_base.mkdir(parents=True, exist_ok=True)
