@@ -15,8 +15,9 @@ DataFrames, Series, and arbitrary Python objects, using a filesystem hierarchy.
 ### Key Features
 
 - **Type-Aware Encoding**: Automatically selects the best format (folder, parquet, HDF5, JSON, or pickle) based on value type
-- **Metadata Sidecars**: Each output is accompanied by a `.tidyrun` metadata file recording the encoding format and version
+- **Metadata Sidecars**: Each output is accompanied by a `.tidyrun` metadata file recording encoding format, version, and checksum
 - **Lazy Evaluation**: Directories deserialize into `LazyDict` objects that load values on-demand on each access
+- **Unified Path Handling**: Paths are normalized via `cloudpathlib.AnyPath` for local and cloud-backed locations
 - **Optional S3 Support**: `s3://...` locations work when the `boto3` extra is installed
 - **Recursive Concatenation**: `LazyDict.concat()` method provides pandas-style aggregation across nested structures
 - **Parallel Leaf Loading**: `LazyDict.concat(max_workers=...)` can load selected leaf values concurrently
@@ -167,7 +168,7 @@ df = result["df"]
 | Scalar (`int`, `str`, `bool`, `float`, `date`, `datetime`, `time`) | JSON | `*.json` | JSON-serializable scalars |
 | Other objects | Pickle | `*.pickle` | Last resort |
 
-Every output gets a `.tidyrun` metadata sidecar recording the selected format.
+Every output gets a `.tidyrun` metadata sidecar recording the selected format and checksum.
 
 ### LazyDict in Practice
 
@@ -215,7 +216,7 @@ comparison_table = runs.concat(names=["exp_id"])
 
 | Function | Purpose |
 |----------|---------|
-| `serialize(value, target, encoders=None)` | Save a value to disk |
+| `serialize(value, target, encoders=None)` | Save a value to disk and return `ChecksumInfo` |
 | `deserialize(source, encoders=None)` | Load a value from disk |
 | `LazyDict.to_dict()` | Materialize a nested `LazyDict` |
 | `LazyDict.concat(names, transform, select, max_workers=None)` | Recursively concatenate DataFrames with optional parallel leaf loading |
@@ -267,6 +268,10 @@ Every serialized value gets a `.tidyrun` metadata file:
 version = 1
 encoding = "dataframe-parquet"
 suffix = ".parquet"
+
+[checksum]
+algorithm = "sha256"
+digest = "..."
 ```
 
 This metadata:
@@ -285,8 +290,11 @@ Serializes a Python value to disk using the configured encoder pipeline.
 
 **Parameters:**
 - `value` (Any): The value to serialize (dict, DataFrame, Series, scalar, etc.)
-- `target` (str | PathLike): Where to write the output (with or without extension)
+- `target` (Path | CloudPath): Where to write the output (with or without extension)
 - `encoders` (Iterable[EncoderSpec], optional): Custom encoder pipeline; defaults to `default_encoders()`
+
+**Returns:**
+- `ChecksumInfo`: checksum (`algorithm`, `digest`) for the serialized payload.
 
 **S3 support:**
 - When `target` is an `s3://...` URI, TidyRun stages the output locally and uploads the resulting tree to S3
@@ -296,6 +304,7 @@ Serializes a Python value to disk using the configured encoder pipeline.
 - Selects first encoder whose predicate matches the value
 - Calls the encoder's serializer function
 - Writes metadata sidecar with encoding info
+- Returns payload checksum information to the caller
 - If serializer raises `GoToNextEncoderException`, tries next matching encoder
 
 **Raises:**
@@ -318,7 +327,7 @@ serialize({"data": pd.DataFrame(...)}, "./results/exp_1")
 Deserializes a value from disk using metadata to determine format.
 
 **Parameters:**
-- `source` (str | PathLike): Location to read from (with or without extension)
+- `source` (Path | CloudPath): Location to read from (with or without extension)
 - `encoders` (Iterable[EncoderSpec], optional): Custom encoder pipeline
 
 **S3 support:**
@@ -599,10 +608,8 @@ Parquet serialization uses pyarrow by default; fastparquet is tried if pyarrow i
 3. **Parquet Multi-Index**: Multi-index DataFrames cannot be serialized to parquet and fall back to HDF5.
 
 ### Planned Features
-
-1. **Additional Remote Backends**: Support GCS, Azure Blob Storage, and other fsspec-compatible stores.
-2. **Virtual Keys**: Glob-like patterns in LazyDict keys for dynamic filtering
-3. **Schema Hinting**: Pre-load metadata from Parquet files to detect schema mismatches before full materialization
+- **Metadata Sidecars**: Each output is accompanied by a `.tidyrun` metadata file recording encoding format, version, and checksum
+- **Unified Path Handling**: Paths are normalized via `cloudpathlib.AnyPath` for local and cloud-backed locations
 4. **Custom Metadata**: Allow users to store arbitrary metadata alongside outputs
 
 ## Testing
@@ -610,13 +617,21 @@ Parquet serialization uses pyarrow by default; fastparquet is tried if pyarrow i
 Run the full test suite:
 
 ```bash
+
+[checksum]
+algorithm = "sha256"
+digest = "..."
 pixi run pytest tests/serialization tests/test_keys.py
 ```
 
 Key test modules:
 
+**Returns:**
+- `ChecksumInfo`: checksum (`algorithm`, `digest`) for the serialized payload.
+
 - `tests/serialization/test_api.py`: End-to-end serialize/deserialize, metadata, fallback sequencing, S3 round-trip
 - `tests/serialization/test_encoders.py`: Encoder predicates and detection logic
+- Returns payload checksum information to the caller
 - `tests/serialization/test_lazy_dict.py`: LazyDict access patterns and concatenation
 - `tests/test_keys.py`: Key encoding and decoding
 

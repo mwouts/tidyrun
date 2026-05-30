@@ -24,7 +24,8 @@ TidyRun also includes a comprehensive serialization system for storing and retri
 - **Type-Aware Encoding**: Automatically selects folder, Parquet, HDF5, JSON, or pickle based on value type
 - **Lazy Evaluation**: Directories deserialize into `LazyDict` objects that load values on-demand
 - **Recursive Concatenation**: Aggregate DataFrames across nested structures with `LazyDict.concat()` (optionally parallel with `max_workers`)
-- **Metadata Sidecars**: Each output is tracked with `.tidyrun` metadata files for format versioning
+- **Metadata Sidecars**: Each output is tracked with `.tidyrun` metadata files for format versioning and checksums
+- **Checksum Return Value**: `serialize(...)` returns checksum information (`algorithm`, `digest`) for the serialized payload
 - **Extensible Pipeline**: Customize encoders or add support for custom types
 - **Intelligent Fallback**: Parquet → HDF5 → JSON → Pickle chain ensures robust serialization
 

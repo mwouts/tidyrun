@@ -2,6 +2,17 @@
 
 All notable changes to TidyRun are documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- Updated serialization path handling to normalize input paths through `cloudpathlib.AnyPath`, enabling a single path abstraction for local and cloud-backed locations.
+- Updated serialization metadata checksum shape to use a flat `checksum` object (`algorithm`, `digest`) instead of nested output checksum tables.
+- Updated `serialize(...)` to return a `ChecksumInfo` value so callers can compose higher-level checksums without re-reading serialized outputs.
+- Updated JSON and pickle fallback encoders to compute checksums from in-memory payload bytes during write.
+- Updated parquet DataFrame/Series encoders to serialize to in-memory bytes, write once, and hash those bytes directly.
+- Updated dict-folder checksum calculation to compose parent checksums from encoded child names and child checksums.
+
 ## [0.0.4] — (2026-05-16)
 
 ### Added

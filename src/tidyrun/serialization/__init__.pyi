@@ -30,6 +30,7 @@ from .encoders import (
 )
 from .lazy_dict import LazyDict
 from .types import (
+    ChecksumInfo,
     DEFAULT_HDF5_EXTENSION,
     DEFAULT_JSON_EXTENSION,
     DEFAULT_PARQUET_EXTENSION,
@@ -37,7 +38,6 @@ from .types import (
     Deserializer,
     EncoderSpec,
     GoToNextEncoderException,
-    Location,
     Predicate,
     Serializer,
     TidyRunDeserializationError,
@@ -49,11 +49,11 @@ __all__ = [
     "DEFAULT_JSON_EXTENSION",
     "DEFAULT_PARQUET_EXTENSION",
     "DEFAULT_PICKLE_EXTENSION",
+    "ChecksumInfo",
     "Deserializer",
     "EncoderSpec",
     "GoToNextEncoderException",
     "LazyDict",
-    "Location",
     "Predicate",
     "Serializer",
     "TidyRunDeserializationError",

@@ -1,8 +1,7 @@
-from __future__ import annotations
-
+from pathlib import Path
 from typing import Any, Iterable
 
-from tidyrun.constants import TIDYRUN_DEFAULT_HASH_ALGORITHM
+from cloudpathlib import CloudPath, AnyPath
 
 from .encoders import (
     can_encode_with_hdf5,
@@ -24,18 +23,16 @@ from .encoders import (
     is_mapping,
 )
 from .metadata import (
-    checksum_for_path,
     metadata_exists,
     read_metadata,
     suffix_for_encoder,
     write_metadata,
 )
-from .paths import to_local_path, with_suffix
-from .s3 import deserialize_from_s3, is_s3_location, serialize_to_s3
+from .paths import with_suffix
 from .types import (
+    ChecksumInfo,
     EncoderSpec,
     GoToNextEncoderException,
-    Location,
     TidyRunDeserializationError,
     TidyRunSerializationError,
 )
@@ -109,7 +106,7 @@ def _deserialize_without_metadata(
             continue
 
         try:
-            return encoder.deserializer(payload_path)
+            return encoder.deserializer(base_path)
         except Exception as exc:
             last_error = exc
 
@@ -134,24 +131,21 @@ def select_encoder(value: Any, encoders: Iterable[EncoderSpec]) -> EncoderSpec:
 
 
 def serialize(
-    value: Any, target: Location, encoders: Iterable[EncoderSpec] | None = None
-) -> None:
+    value: Any,
+    target: str | Path | CloudPath,
+    encoders: Iterable[EncoderSpec] | None = None,
+) -> ChecksumInfo:
     """Serialize a value with the configured encoder sequence."""
-    if is_s3_location(target):
-        encoder_list = tuple(default_encoders() if encoders is None else encoders)
-        serialize_to_s3(value, target, encoder_list)
-        return
-
-    base_path = to_local_path(target)
-
+    path = AnyPath(target)
     encoder_list = tuple(default_encoders() if encoders is None else encoders)
     selected_encoder: EncoderSpec | None = None
+    checksum: ChecksumInfo | None = None
     for encoder in encoder_list:
         if not encoder.predicate(value):
             continue
 
         try:
-            encoder.serializer(value, target)
+            checksum = encoder.serializer(value, path)
         except GoToNextEncoderException:
             continue
 
@@ -163,47 +157,30 @@ def serialize(
             f"No encoder found for value of type {type(value).__name__!r}"
         )
 
-    payload_path = (
-        base_path
-        if suffix_for_encoder(selected_encoder.name) == ""
-        else with_suffix(base_path, suffix_for_encoder(selected_encoder.name))
-    )
-    output_digest = checksum_for_path(
-        payload_path,
-        algorithm=TIDYRUN_DEFAULT_HASH_ALGORITHM,
-    )
-
     write_metadata(
-        base_path,
+        path,
         encoding=selected_encoder.name,
         suffix=suffix_for_encoder(selected_encoder.name),
-        metadata_extra={
-            "checksums": {
-                "output": {
-                    "algorithm": TIDYRUN_DEFAULT_HASH_ALGORITHM,
-                    "digest": output_digest,
-                }
-            }
-        },
+        checksum=checksum,
     )
+    return checksum
 
 
-def deserialize(source: Location, encoders: Iterable[EncoderSpec] | None = None) -> Any:
-    """Deserialize a value from an extension-free location using metadata."""
-    if is_s3_location(source):
-        encoder_list = tuple(default_encoders() if encoders is None else encoders)
-        return deserialize_from_s3(source, encoder_list)
+def deserialize(
+    source: str | Path | CloudPath, encoders: Iterable[EncoderSpec] | None = None
+) -> Any:
+    """
+    Deserialize a value from an extension-free location using metadata.
 
-    base_path = to_local_path(source)
-
+    Directories are deserialized as LazyDict objects
+    """
+    path = AnyPath(source)
     encoder_list = tuple(default_encoders() if encoders is None else encoders)
-    if not metadata_exists(base_path):
-        return _deserialize_without_metadata(base_path, encoder_list)
+    if not metadata_exists(path):
+        return _deserialize_without_metadata(path, encoder_list)
 
-    metadata = read_metadata(base_path)
+    metadata = read_metadata(path)
     encoder_name = metadata["encoding"]
-    suffix = metadata["suffix"]
-
     encoder_map = encoder_by_name(encoder_list)
     encoder = encoder_map.get(encoder_name)
     if encoder is None:
@@ -211,5 +188,4 @@ def deserialize(source: Location, encoders: Iterable[EncoderSpec] | None = None)
             f"Unknown encoder in metadata: {encoder_name!r}"
         )
 
-    payload_path = base_path if suffix == "" else with_suffix(base_path, suffix)
-    return encoder.deserializer(payload_path)
+    return encoder.deserializer(path)
