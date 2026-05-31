@@ -10,6 +10,7 @@ All notable changes to TidyRun are documented in this file.
 - The LazyDict object is even lazier now: it won't even list the keys unless you access them (at this stage the LazyDict objects have no cache at all)
 - LazyDict are serialized as symlinks
 - The checksum calculation is done in memory when possible (e.g. for all formats but HDF5, for which we need to write on disk and re-read the bytes)
+- We have dropped support for Python 3.10
 
 ## [0.0.4] — (2026-05-16)
 
