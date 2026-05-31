@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from tidyrun import DAGExecutionError
-from tidyrun.dag import DAG, _job_output_exists
+from tidyrun.dag import DAG, job_output_exists
 from tidyrun.job import Job
 
 
@@ -119,7 +119,7 @@ def test_dag_execution_error_str_contains_job_id(tmp_path: Path) -> None:
 
 def test_skip_completed_skips_already_run_jobs(tmp_path: Path) -> None:
     from tidyrun.constants import TIDYRUN_METADATA_EXTENSION
-    from tidyrun.dag import _job_output_base
+    from tidyrun.dag import job_output_base
 
     dag = DAG(
         {
@@ -137,7 +137,9 @@ def test_skip_completed_skips_already_run_jobs(tmp_path: Path) -> None:
     )
 
     # Tamper with "a"'s metadata to confirm it is not overwritten on re-run
-    a_meta = Path(str(_job_output_base(plan_dir, "a")) + TIDYRUN_METADATA_EXTENSION)
+    a_meta = Path(
+        str(job_output_base(plan_dir / "outputs", "a")) + TIDYRUN_METADATA_EXTENSION
+    )
     sentinel_content = a_meta.read_text() + "\n# sentinel"
     a_meta.write_text(sentinel_content)
 
@@ -171,8 +173,8 @@ def test_skip_completed_reruns_only_failed_jobs(tmp_path: Path) -> None:
     assert exc_info.value.failed_job_id == "b"
 
     # "a"'s output was written; "b"'s was not
-    assert _job_output_exists(plan_dir, "a")
-    assert not _job_output_exists(plan_dir, "b")
+    assert job_output_exists(plan_dir / "outputs", "a")
+    assert not job_output_exists(plan_dir / "outputs", "b")
 
     # Second run: "b" now works; resubmit with skip_completed=True
     b_fixed = Job(func=_add, kwargs={"x": a, "y": 10})
@@ -281,13 +283,13 @@ def test_clear_outputs_removes_all_outputs(tmp_path: Path) -> None:
         execution_mode="thread",
     )
 
-    assert _job_output_exists(plan_dir, "a")
-    assert _job_output_exists(plan_dir, "b")
+    assert job_output_exists(plan_dir / "outputs", "a")
+    assert job_output_exists(plan_dir / "outputs", "b")
 
     dag.clear_outputs(plan_dir)
 
-    assert not _job_output_exists(plan_dir, "a")
-    assert not _job_output_exists(plan_dir, "b")
+    assert not job_output_exists(plan_dir / "outputs", "a")
+    assert not job_output_exists(plan_dir / "outputs", "b")
 
 
 def test_clear_outputs_removes_specific_jobs(tmp_path: Path) -> None:
@@ -307,8 +309,8 @@ def test_clear_outputs_removes_specific_jobs(tmp_path: Path) -> None:
 
     dag.clear_outputs(plan_dir, job_ids=["a"])
 
-    assert not _job_output_exists(plan_dir, "a")
-    assert _job_output_exists(plan_dir, "b")
+    assert not job_output_exists(plan_dir / "outputs", "a")
+    assert job_output_exists(plan_dir / "outputs", "b")
 
 
 def test_clear_outputs_noop_if_no_outputs_dir(tmp_path: Path) -> None:

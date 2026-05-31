@@ -33,13 +33,29 @@ class AwsBatchExecutor(Executor):
     This executor is designed for materialized DAG execution where each submitted
     task corresponds to one compiled job identified by ``(plan_dir, job_id)``.
 
-    Notes
-    -----
-    - Requires ``boto3`` at runtime. Install with ``pip install tidyrun[s3]``.
-    - ``submit`` expects at least two positional arguments:
-      ``plan_dir`` and ``job_id``.
-    - The callable argument is ignored by AWS Batch workers; worker behavior is
-      defined by your Batch job definition container entrypoint.
+    The container image must call ``tidyrun-batch-entrypoint`` (or
+    :func:`tidyrun.batch_entrypoint`) as its ``CMD``. That command reads
+    ``TIDYRUN_PLAN_DIR`` and ``TIDYRUN_JOB_ID`` (or
+    ``TIDYRUN_JOB_IDS_JSON`` + ``AWS_BATCH_JOB_ARRAY_INDEX`` for array jobs)
+    and runs the job.
+
+    Args:
+        job_queue: ARN or name of the AWS Batch job queue.
+        job_definition: ARN or name (with optional revision) of the Batch job
+            definition whose container image calls ``tidyrun-batch-entrypoint``.
+        extra_env: Optional mapping of additional environment variables to
+            inject into every submitted container. Use this to pass
+            project-specific settings that the container needs before running
+            the job — for example ``GIT_REPO_URL`` and ``GIT_COMMIT`` when the
+            container checks out source code at runtime. These variables are
+            added after the tidyrun-reserved ones and will not override them.
+        poll_interval_seconds: Seconds between ``describe_jobs`` polls.
+        region_name: AWS region; defaults to the boto3 session default.
+        batch_client: Optional pre-built boto3 Batch client (useful for testing
+            with ``moto`` or a custom endpoint).
+
+    Note:
+        Requires ``boto3`` at runtime. Install with ``pip install tidyrun[s3]``.
     """
 
     _TERMINAL_SUCCESS = {"SUCCEEDED"}
@@ -50,12 +66,14 @@ class AwsBatchExecutor(Executor):
         job_queue: str,
         job_definition: str,
         *,
+        extra_env: dict[str, str] | None = None,
         poll_interval_seconds: float = 1.0,
         region_name: str | None = None,
         batch_client: _BatchClient | None = None,
     ) -> None:
         self._job_queue = job_queue
         self._job_definition = job_definition
+        self._extra_env: dict[str, str] = dict(extra_env) if extra_env else {}
         self._poll_interval_seconds = poll_interval_seconds
         self._shutdown = False
         self._lock = threading.Lock()
@@ -113,29 +131,28 @@ class AwsBatchExecutor(Executor):
                 raise ValueError("job_ids must not contain empty job ids")
 
         plan_dir_str = str(plan_dir)
+        job_ids_json = json.dumps(list(normalized_job_ids))
         parameters = {
             "tidyrun_plan_dir": plan_dir_str,
-            "tidyrun_job_ids_json": json.dumps(list(normalized_job_ids)),
+            "tidyrun_job_ids_json": job_ids_json,
             "tidyrun_job_id": normalized_job_ids[0],
         }
         parameters.update({k: str(v) for k, v in sbatch_options.items()})
         job_name = str(parameters.pop("job_name", normalized_job_ids[0]))
+
+        array_env: list[dict[str, str]] = [
+            {"name": "TIDYRUN_PLAN_DIR", "value": plan_dir_str},
+            {"name": "TIDYRUN_JOB_IDS_JSON", "value": job_ids_json},
+            {"name": "TIDYRUN_JOB_ID", "value": normalized_job_ids[0]},
+        ]
+        array_env.extend({"name": k, "value": v} for k, v in self._extra_env.items())
 
         submit_kwargs: dict[str, Any] = {
             "jobName": self._build_job_name(job_name),
             "jobQueue": self._job_queue,
             "jobDefinition": self._job_definition,
             "arrayProperties": {"size": len(normalized_job_ids)},
-            "containerOverrides": {
-                "environment": [
-                    {"name": "TIDYRUN_PLAN_DIR", "value": plan_dir_str},
-                    {
-                        "name": "TIDYRUN_JOB_IDS_JSON",
-                        "value": json.dumps(list(normalized_job_ids)),
-                    },
-                    {"name": "TIDYRUN_JOB_ID", "value": normalized_job_ids[0]},
-                ]
-            },
+            "containerOverrides": {"environment": array_env},
             "parameters": parameters,
         }
 
@@ -178,16 +195,17 @@ class AwsBatchExecutor(Executor):
         plan_dir = str(args[0])
         job_id = str(args[1])
 
+        env: list[dict[str, str]] = [
+            {"name": "TIDYRUN_PLAN_DIR", "value": plan_dir},
+            {"name": "TIDYRUN_JOB_ID", "value": job_id},
+        ]
+        env.extend({"name": k, "value": v} for k, v in self._extra_env.items())
+
         submit_kwargs: dict[str, Any] = {
             "jobName": self._build_job_name(job_id),
             "jobQueue": self._job_queue,
             "jobDefinition": self._job_definition,
-            "containerOverrides": {
-                "environment": [
-                    {"name": "TIDYRUN_PLAN_DIR", "value": plan_dir},
-                    {"name": "TIDYRUN_JOB_ID", "value": job_id},
-                ]
-            },
+            "containerOverrides": {"environment": env},
             "parameters": {
                 "tidyrun_plan_dir": plan_dir,
                 "tidyrun_job_id": job_id,

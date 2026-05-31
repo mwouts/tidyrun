@@ -22,6 +22,21 @@ def _current_pid() -> int:
     return os.getpid()
 
 
+def test_materialize_and_execute_in_threads(tmp_path: Path) -> None:
+    producer = Job(func=_const_two, kwargs={})
+    consumer = Job(func=_add, kwargs={"x": producer, "y": 3})
+    dag = DAG({"producer": producer, "consumer": consumer})
+
+    plan_dir = dag.materialize(tmp_path / "plan")
+    result = dag.execute_materialized(
+        dag_path=plan_dir,
+        output_path=tmp_path / "outputs",
+        execution_mode="thread",
+        max_workers=2,
+    )
+    assert result.to_dict() == {"producer": 2, "consumer": 5}
+
+
 def test_materialize_and_execute_in_subprocesses(tmp_path: Path) -> None:
     producer = Job(func=_const_two, kwargs={})
     consumer = Job(func=_add, kwargs={"x": producer, "y": 3})
@@ -32,7 +47,8 @@ def test_materialize_and_execute_in_subprocesses(tmp_path: Path) -> None:
 
     materialized = dag.materialize(plan_dir)
     assert materialized == plan_dir
-    assert (plan_dir / "plan.tidyrun").is_file()
+    # Schema v2: no plan.tidyrun; definitions in definitions/ subdir.
+    assert not (plan_dir / "plan.tidyrun").exists()
     assert (plan_dir / "definitions" / "producer.tidyrun").is_file()
     assert (plan_dir / "definitions" / "consumer.tidyrun").is_file()
     assert (plan_dir / "inputs" / "consumer" / "y.tidyrun").is_file()
@@ -76,7 +92,7 @@ def test_job_rerun_snippet_and_public_runner(tmp_path: Path) -> None:
     assert "producer" in snippet
 
     definition = load_job_definition(plan_dir, "producer")
-    callable_obj = load_callable(definition, plan_dir)
+    callable_obj = load_callable(definition)
     inputs = load_job_inputs(definition, plan_dir)
     assert callable_obj(**inputs) == 2
 

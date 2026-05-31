@@ -101,48 +101,10 @@ class Job:
         )
 
     def rerun_snippet(self, *, dag_path: str | Path, job_id: str) -> str:
-        """Return a Python snippet that reruns this job from a materialized plan.
+        """Return a Python snippet that reruns this job from a materialized plan."""
+        from tidyrun.plan import rerun_snippet as _rerun_snippet
 
-        The snippet demonstrates loading job metadata, callable, and inputs,
-        then re-executing the callable.
-        """
-        plan_path = Path(dag_path).as_posix()
-        module = getattr(self.func, "__module__", None)
-        qualname = getattr(self.func, "__qualname__", None)
-        has_explicit_import = (
-            isinstance(module, str)
-            and isinstance(qualname, str)
-            and module != "__main__"
-            and "<locals>" not in qualname
-            and qualname.isidentifier()
-        )
-
-        lines = [
-            "from pathlib import Path",
-            "from tidyrun import load_callable, load_job_definition, load_job_inputs",
-            "",
-            f"dag_path = Path({plan_path!r})",
-            f"job_id = {job_id!r}",
-            "job_definition = load_job_definition(dag_path, job_id)",
-        ]
-
-        if has_explicit_import:
-            lines.extend(
-                [
-                    f"from {module} import {qualname} as imported_callable",
-                    "callable_obj = imported_callable",
-                ]
-            )
-        else:
-            lines.append("callable_obj = load_callable(job_definition, dag_path)")
-
-        lines.extend(
-            [
-                "inputs = load_job_inputs(job_definition, dag_path)",
-                "outputs = callable_obj(**inputs)",
-            ]
-        )
-        return "\n".join(lines)
+        return _rerun_snippet(dag_path, job_id)
 
 
 @dataclass

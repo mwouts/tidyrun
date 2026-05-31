@@ -34,6 +34,7 @@ plugins:
       default_handler: python
       handlers:
         python:
+          paths: [src]
           options:
             docstring_style: google
             show_source: true
@@ -56,6 +57,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - DAG Guide: dag.md
+  - Executors: executors.md
   - Serialization Guide: serialization.md
   - Contributing: contributing.md
   - Quick Start: quick_start.md

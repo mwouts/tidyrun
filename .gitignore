@@ -25,3 +25,6 @@ _build
 
 # MkDocs / GitHub Pages build output
 site/
+
+# Claude
+.claude/

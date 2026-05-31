@@ -265,132 +265,48 @@ print(func(**kwargs))
 
 ### SLURM Executor
 
-Use `SlurmExecutor` when you want each top-level DAG node to run as a SLURM
-batch job.
+`SlurmExecutor` submits each job as an `sbatch` task, polling `squeue` for
+completion. The plan directory and `shared_dir` must both be on shared storage
+visible from all compute nodes. See the [Executors guide](executors.md#slurm) for setup
+instructions, resource configuration, and a full deployment example with git
+commit pinning.
 
 ```python
-from tidyrun import DAG, Job, SlurmExecutor
-
-
-def square(x: int) -> int:
-    return x * x
-
-
-dag = DAG()
-dag["a"] = Job(func=square, kwargs={"x": 3})
+from tidyrun import SlurmExecutor
 
 with SlurmExecutor(
-    shared_dir="/shared/tidyrun_jobs",
-    partition="debug",
+    shared_dir="/shared/tidyrun_scratch",
+    partition="compute",
     time_limit="01:00:00",
     memory="8G",
-    cpus_per_task=2,
-    gres="gpu:1",
 ) as executor:
-    outputs = dag.evaluate("/shared/tidyrun_outputs/run_001", executor=executor)
-
-print(outputs["a"])  # 9
-```
-
-Per-node overrides can be provided at evaluation time:
-
-```python
-job_resources = {
-    "a": {"mem": "32G", "time": "04:00:00"},
-    # other keys use executor defaults
-}
-
-with SlurmExecutor(shared_dir="/shared/tidyrun_jobs", memory="8G") as executor:
-    outputs = dag.evaluate(
-        "/shared/tidyrun_outputs/run_001",
+    result = dag.execute_materialized(
+        dag_path="/shared/plans/run-001",
+        output_path="/shared/outputs/run-001",
         executor=executor,
-        job_resources=job_resources,
     )
 ```
 
-Notes:
-
-- `shared_dir` must be visible from both submission and compute nodes.
-- Submitted callables and arguments must be pickle-serializable.
-- `SlurmExecutor` uses `sbatch` for submission and `squeue` for completion
-  polling.
-- Resource settings can be passed directly (`time_limit`, `memory`,
-  `cpus_per_task`, etc.).
-- You can still use `sbatch_options` for advanced flags; when both are set,
-  `sbatch_options` values take precedence.
-- `job_resources` applies per-node overrides by DAG key and requires an
-  executor that supports `submit_with_options` (such as `SlurmExecutor`).
-
 ### AWS Batch Executor
 
-`AwsBatchExecutor` integrates with AWS Batch by submitting each materialized
-job as a Batch job and passing:
-
-- `TIDYRUN_PLAN_DIR`
-- `TIDYRUN_JOB_ID`
-
-as container environment variables.
-
-For parametrized jobs, executors that implement array submission (including
-`AwsBatchExecutor` and `SlurmExecutor`) receive homogeneous ready batches as
-one array submission. Job ids are still the normal relative DAG paths
-(`group/a`, `scores/m1/train`, etc.) and are passed unchanged in metadata.
+`AwsBatchExecutor` submits each job as a Batch container task, polling
+`describe_jobs` for completion. The plan directory must be an S3 URI, and the
+container image must call `tidyrun-batch-entrypoint` as its `CMD`. See the
+[Executors guide](executors.md#aws-batch) for the container setup, IAM
+requirements, and a full deployment example with git commit pinning.
 
 ```python
 from tidyrun import AwsBatchExecutor
 
 with AwsBatchExecutor(
-    job_queue="tidyrun-queue",
-    job_definition="tidyrun-worker:1",
+    job_queue="my-queue",
+    job_definition="my-worker:1",
 ) as executor:
-    outputs = dag.evaluate(
-        "./aws",
+    result = dag.execute_materialized(
+        dag_path="s3://my-bucket/plans/run-001",
+        output_path="s3://my-bucket/outputs/run-001",
         executor=executor,
-        execution_mode="thread",  # executor handles remote execution
     )
-```
-
-Use `job_resources` to pass per-node submit parameters to
-`AwsBatchExecutor.submit_with_options(...)`.
-
-`AwsBatchExecutor.submit_array_with_options(...)` submits one AWS Batch array
-job and provides both:
-
-- `TIDYRUN_JOB_ID`: first logical job id (for backward compatibility)
-- `TIDYRUN_JOB_IDS_JSON`: JSON array of all logical job ids in submission order
-
-along with matching submit parameters:
-
-- `tidyrun_job_id`
-- `tidyrun_job_ids_json`
-
-Array workers can select their logical job id using
-`AWS_BATCH_JOB_ARRAY_INDEX`.
-
-Submission checklist:
-
-- Install optional dependencies: `pip install tidyrun[s3]`
-- Ensure the Batch worker image includes `tidyrun` and your callable modules
-- Use a plan path accessible to workers (local shared path or `s3://...`)
-- Configure the Batch job definition so the container command reads
-    `TIDYRUN_PLAN_DIR` and `TIDYRUN_JOB_ID` and runs one materialized job
-
-Example worker entrypoint logic:
-
-```python
-import json
-import os
-from tidyrun import run_materialized_job
-
-plan_dir = os.environ["TIDYRUN_PLAN_DIR"]
-job_ids_json = os.environ.get("TIDYRUN_JOB_IDS_JSON")
-if job_ids_json:
-    idx = int(os.environ["AWS_BATCH_JOB_ARRAY_INDEX"])
-    job_id = json.loads(job_ids_json)[idx]
-else:
-    job_id = os.environ["TIDYRUN_JOB_ID"]
-
-run_materialized_job(plan_dir, job_id)
 ```
 
 ## End-to-End Example
