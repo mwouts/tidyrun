@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from os import PathLike
-from typing import Any, Callable, Union
+from cloudpathlib import CloudPath
+from pathlib import Path
+from typing import Any, Callable
 
 Predicate = Callable[[Any], bool]
-Location = Union[str, PathLike[str]]
-Serializer = Callable[[Any, Location], None]
-Deserializer = Callable[[Location], Any]
+
+
+@dataclass(frozen=True)
+class ChecksumInfo:
+    algorithm: str
+    digest: str
+
+
+Serializer = Callable[[Any, Path | CloudPath], ChecksumInfo]
+Deserializer = Callable[[Path | CloudPath, ChecksumInfo | None], Any]
 
 DEFAULT_JSON_EXTENSION = ".json"
 DEFAULT_PARQUET_EXTENSION = ".parquet"

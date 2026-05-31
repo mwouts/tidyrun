@@ -13,17 +13,18 @@ from datetime import date, datetime, time
 import importlib
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from typing import Any, cast, Literal, Union
 from urllib.parse import urlparse
 
+from cloudpathlib import AnyPath, CloudPath
 import toml
 
 from tidyrun.job import Job, ParametrizedJob
 from tidyrun.keys import Key, decode_key, encode_key
-from tidyrun.serialization.s3 import is_s3_location, upload_local_tree_to_s3
 
 Node = Union[Job, ParametrizedJob, "DAG"]
 ProgressCallback = Callable[[str], None]
@@ -69,6 +70,33 @@ class DAGExecutionError(Exception):
 
 def _to_path(value: Any) -> Path:
     return value if isinstance(value, Path) else Path(value)
+
+
+def is_s3_location(location: Any) -> bool:
+    if not isinstance(location, str):
+        return False
+    parsed = urlparse(location)
+    return parsed.scheme == "s3" and bool(parsed.netloc)
+
+
+def upload_local_tree_to_s3(local_root: Path, s3_location: str) -> None:
+    destination = AnyPath(s3_location)
+    if not isinstance(destination, CloudPath):
+        raise ValueError(f"Expected cloud destination, got: {s3_location!r}")
+
+    leaf_name = _s3_leaf_name(s3_location)
+
+    for source_file in local_root.rglob("*"):
+        if not source_file.is_file():
+            continue
+
+        relative = source_file.relative_to(local_root)
+        relative_parts = relative.parts
+        if relative_parts and relative_parts[0] == leaf_name:
+            relative = Path(*relative_parts[1:])
+        target = destination / relative.as_posix()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source_file.read_bytes())
 
 
 def _s3_leaf_name(location: str) -> str:
@@ -407,7 +435,9 @@ def _run_compiled_job(plan_dir: Path, job_id: str) -> None:
     kwargs = load_job_inputs(definition, plan_dir)
 
     result = func(**kwargs)
-    serialize(result, _job_output_base(plan_dir, job_id))
+    output_base = _job_output_base(plan_dir, job_id)
+    output_base.parent.mkdir(parents=True, exist_ok=True)
+    serialize(result, output_base)
 
 
 def run_materialized_job(dag_path: Any, job_id: str) -> None:
@@ -1172,6 +1202,12 @@ class DAG(Mapping[Key, Node]):
                 plan_dir, cast(Mapping[str, Any], ref)
             )
 
+        if skip_completed and resolved_output.exists():
+            if resolved_output.is_dir():
+                shutil.rmtree(resolved_output)
+            else:
+                resolved_output.unlink()
+        resolved_output.parent.mkdir(parents=True, exist_ok=True)
         serialize(resolved, resolved_output)
         reporter.info("done")
         return deserialize(resolved_output)

@@ -5,26 +5,33 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from tidyrun.keys import Key
+from cloudpathlib import CloudPath
+from tidyrun.constants import TIDYRUN_METADATA_EXTENSION
+
+from tidyrun.keys import Key, encode_key, decode_key
+from .metadata import metadata_exists, read_metadata
+from .types import ChecksumInfo
+from .types import TidyRunDeserializationError
 
 
-def _entry_is_lazy_dict(base_dir: Path, encoded_name: str) -> bool:
-    """Return True if entry at *base_dir/encoded_name* deserialises to a LazyDict.
+def _decoded_name_from_payload_name(name: str) -> str | None:
+    if name.endswith(TIDYRUN_METADATA_EXTENSION):
+        return None
 
-    Peeks at the metadata sidecar (if present) instead of loading the value,
-    so this is cheap regardless of payload size.
-    """
-    from .metadata import metadata_exists, read_metadata
+    candidate_suffixes = (".parquet", ".h5", ".json", ".pickle")
+    for suffix in candidate_suffixes:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
 
-    entry_path = base_dir / encoded_name
-    if metadata_exists(entry_path):
-        try:
-            md = read_metadata(entry_path)
-            return md.get("encoding") == "dict-folder"
-        except Exception:
-            return False
-    # No metadata sidecar: legacy or unknown — treat directories as LazyDicts
-    return entry_path.is_dir()
+    return name
+
+
+def _entry_is_lazy_dict(serialized_path: Path | CloudPath, encoded_name: str) -> bool:
+    child_path = serialized_path / encoded_name
+    if metadata_exists(child_path):
+        metadata = read_metadata(child_path)
+        return metadata["encoding"] == "dict-folder"
+    return child_path.is_dir()
 
 
 class LazyDict(Mapping[Key, Any]):
@@ -32,42 +39,68 @@ class LazyDict(Mapping[Key, Any]):
 
     def __init__(
         self,
-        base_dir: Path,
-        entries: dict[Key, str],
-        ensure_local_path: Callable[[Path], None] | None = None,
+        serialized_path: Path | CloudPath,
+        checksum: ChecksumInfo | None = None,
     ) -> None:
-        self._base_dir = base_dir
-        self._entries = entries
-        self._keepalive: object | None = None
-        self._ensure_local_path = ensure_local_path
+        self.__serialized_path__ = serialized_path
+        self.__checksum__ = checksum
 
-    def _ensure_available(self, path: Path) -> None:
-        if self._ensure_local_path is not None:
-            self._ensure_local_path(path)
+    """Marker that this LazyDict can be serialized as a symlink reference."""
+
+    def __fspath__(self) -> str:
+        """Return the path this LazyDict was loaded from.
+
+        This enables symlink serialization via os.fspath() protocol.
+        """
+        return str(self.__serialized_path__)
+
+    def _encoded_entries(self) -> list[str]:
+        if not self.__serialized_path__.is_dir():
+            raise TidyRunDeserializationError(
+                f"Expected directory, got: {self.__serialized_path__}"
+            )
+
+        serialized_path = cast(Any, self.__serialized_path__)
+        entries: list[str] = []
+        metadata_files = sorted(
+            serialized_path.glob(f"*{TIDYRUN_METADATA_EXTENSION}"), key=lambda p: p.name
+        )
+        if metadata_files:
+            for metadata_file in metadata_files:
+                encoded_name = metadata_file.name[: -len(TIDYRUN_METADATA_EXTENSION)]
+                entries.append(encoded_name)
+        else:
+            for entry in sorted(serialized_path.iterdir(), key=lambda p: p.name):
+                encoded_name = _decoded_name_from_payload_name(entry.name)
+                if encoded_name is None:
+                    continue
+                entries.append(encoded_name)
+
+        return entries
 
     def __getitem__(self, key: Key) -> Any:
-        if key not in self._entries:
-            raise KeyError(key)
-
         from .api import deserialize
 
-        encoded_name = self._entries[key]
-        entry_path = self._base_dir / encoded_name
-        self._ensure_available(entry_path)
-        value = deserialize(entry_path)
-        if isinstance(value, LazyDict):
-            value._ensure_local_path = self._ensure_local_path
-        return value
+        if isinstance(key, str) and ("/" in key or "\\" in key):
+            # This is a convenience shortcut that allows users to
+            # load nested data by passing a path-like key
+            name = key
+        else:
+            name = encode_key(key)
+
+        key_dir = self.__serialized_path__ / name
+        return deserialize(key_dir)
 
     def __iter__(self) -> Iterator[Key]:
-        return iter(self._entries)
+        for encoded_name in self._encoded_entries():
+            yield decode_key(encoded_name)
 
     def __len__(self) -> int:
-        return len(self._entries)
+        return sum(1 for _ in self)
 
     def _ipython_key_completions_(self) -> list[str]:
         """Return string keys for bracket-completion in IPython/Jupyter."""
-        return [key for key in self._entries if isinstance(key, str)]
+        return [key for key in self if isinstance(key, str)]
 
     def to_dict(self) -> dict[Key, Any]:
         result: dict[Key, Any] = {}
@@ -139,9 +172,8 @@ class LazyDict(Mapping[Key, Any]):
                 if not selected_filter(current_path):
                     continue
 
-                encoded_name = node._entries[key]
-                node._ensure_available(node._base_dir / encoded_name)
-                if _entry_is_lazy_dict(node._base_dir, encoded_name):
+                encoded_name = encode_key(key)
+                if _entry_is_lazy_dict(node.__serialized_path__, encoded_name):
                     if names is not None and len(current_path) >= len(names):
                         raise ValueError(
                             f"Encountered LazyDict at depth {len(current_path)}, "
@@ -163,25 +195,22 @@ class LazyDict(Mapping[Key, Any]):
         # Phase 2: load leaf values — parallel when max_workers is set.
         def _load(ref: tuple[tuple[Key, ...], LazyDict, Key]) -> Any:
             _, node, key = ref
-            return node[key]
+            value = node[key]
+            transformed = selected_transform(value)
+            if isinstance(transformed, (pd.Series, pd.DataFrame)):
+                return transformed
+            return pd.Series([transformed], name="value").to_frame()
 
         if max_workers is not None and len(leaf_refs) > 1:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                loaded_values = list(executor.map(_load, leaf_refs))
+                frames = list(executor.map(_load, leaf_refs))
         else:
-            loaded_values = [_load(ref) for ref in leaf_refs]
+            frames = [_load(ref) for ref in leaf_refs]
 
         # Phase 3: apply transform and build frames.
         keys: list[tuple[Key, ...]] = []
         values: list[Any] = []
-        for (current_path, _, _key), value in zip(leaf_refs, loaded_values):
-            transformed = selected_transform(value)
-            if isinstance(transformed, pd.Series):
-                frame: Any = transformed.to_frame()
-            elif isinstance(transformed, pd.DataFrame):
-                frame = transformed
-            else:
-                frame = pd.Series([transformed], name="value").to_frame()
+        for (current_path, _, _key), frame in zip(leaf_refs, frames):
             keys.append(current_path)
             values.append(frame)
 
@@ -202,4 +231,4 @@ class LazyDict(Mapping[Key, Any]):
             return pd.concat(values, keys=keys, names=names)
 
     def __repr__(self) -> str:
-        return f"LazyDict(keys={list(self._entries)!r})"
+        return f"LazyDict(keys={list(self)!r})"

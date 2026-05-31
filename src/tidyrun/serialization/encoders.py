@@ -1,42 +1,30 @@
-from __future__ import annotations
-
 import importlib.util
 import json
+from pathlib import Path
 from typing import Any, cast
 
-from tidyrun.constants import TIDYRUN_METADATA_EXTENSION
-from tidyrun.keys import Key, decode_key, encode_key
+from cloudpathlib import CloudPath
+
+from tidyrun.constants import TIDYRUN_DEFAULT_HASH_ALGORITHM
+from tidyrun.keys import encode_key
 
 from .lazy_dict import LazyDict
-from .metadata import suffix_for_encoder
-from .paths import to_local_path, with_suffix
+from .metadata import (
+    checksum_for_named_children,
+    checksum_for_path,
+    checksum_from_bytes,
+)
+from .paths import with_suffix
 from .types import (
+    ChecksumInfo,
     DEFAULT_HDF5_EXTENSION,
     DEFAULT_JSON_EXTENSION,
     DEFAULT_PARQUET_EXTENSION,
     DEFAULT_PICKLE_EXTENSION,
     GoToNextEncoderException,
-    Location,
     TidyRunDeserializationError,
     TidyRunSerializationError,
 )
-
-
-def _decoded_name_from_payload_name(name: str) -> str | None:
-    if name.endswith(TIDYRUN_METADATA_EXTENSION):
-        return None
-
-    candidate_suffixes = (
-        suffix_for_encoder("dataframe-parquet"),
-        suffix_for_encoder("pandas-hdf5"),
-        suffix_for_encoder("fallback-json"),
-        suffix_for_encoder("fallback-pickle"),
-    )
-    for suffix in candidate_suffixes:
-        if name.endswith(suffix):
-            return name[: -len(suffix)]
-
-    return name
 
 
 def _pandas() -> Any:
@@ -97,94 +85,90 @@ def can_encode_with_hdf5(value: Any) -> bool:
     return is_dataframe(value) or is_pandas_series(value)
 
 
-def encode_dict_as_folder(value: dict[Any, Any], target_dir: Location) -> None:
+def encode_dict_as_folder(
+    value: dict[Any, Any], target_dir: Path | CloudPath
+) -> ChecksumInfo:
     """Encode a nested dictionary as a folder tree."""
     from .api import serialize
 
-    base_dir = to_local_path(target_dir)
-    base_dir.mkdir(parents=True, exist_ok=True)
+    target_dir.mkdir()
+
+    child_checksums: list[tuple[str, ChecksumInfo]] = []
 
     for key, item in value.items():
-        name = encode_key(key)
-        serialize(item, base_dir / name)
+        encoded_name = encode_key(key)
+        checksum = serialize(item, target_dir / encoded_name)
+        child_checksums.append((encoded_name, checksum))
 
-
-def decode_dict_from_folder(source_dir: Location) -> Any:
-    """Decode a folder tree into a lazy dictionary-like object."""
-    base_dir = to_local_path(source_dir)
-    if not base_dir.is_dir():
-        raise TidyRunDeserializationError(f"Expected directory, got: {base_dir}")
-
-    entries: dict[Key, str] = {}
-    metadata_files = sorted(
-        base_dir.glob(f"*{TIDYRUN_METADATA_EXTENSION}"), key=lambda p: p.name
+    return checksum_for_named_children(
+        child_checksums,
+        algorithm=TIDYRUN_DEFAULT_HASH_ALGORITHM,
     )
-    if metadata_files:
-        for metadata_file in metadata_files:
-            encoded_name = metadata_file.name[: -len(TIDYRUN_METADATA_EXTENSION)]
-            key = decode_key(encoded_name)
-            entries[key] = encoded_name
-    else:
-        for entry in sorted(base_dir.iterdir(), key=lambda p: p.name):
-            encoded_name = _decoded_name_from_payload_name(entry.name)
-            if encoded_name is None or encoded_name in entries:
-                continue
-
-            try:
-                key = decode_key(encoded_name)
-            except ValueError:
-                continue
-
-            entries[key] = encoded_name
-
-    return LazyDict(base_dir, entries)
 
 
-def encode_dataframe_as_parquet(value: Any, target_file: Location) -> None:
+def decode_dict_from_folder(
+    source_dir: Path | CloudPath, checksum: ChecksumInfo | None = None
+) -> Any:
+    """Decode a folder tree into a lazy dictionary-like object."""
+    return LazyDict(source_dir, checksum)
+
+
+def encode_dataframe_as_parquet(
+    value: Any, target_file: Path | CloudPath
+) -> ChecksumInfo:
     """Encode a dataframe to a `.parquet` file."""
     if not is_dataframe(value):
         raise TidyRunSerializationError("Value is not a supported dataframe")
 
-    file_path = with_suffix(to_local_path(target_file), DEFAULT_PARQUET_EXTENSION)
-    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path = with_suffix(target_file, DEFAULT_PARQUET_EXTENSION)
     try:
-        value.to_parquet(file_path)
+        payload = cast(bytes, value.to_parquet(path=None))
+        file_path.write_bytes(payload)
     except (ImportError, TypeError, ValueError) as exc:
         raise GoToNextEncoderException(
             "Parquet encoder could not serialize this dataframe"
         ) from exc
+    return checksum_from_bytes(payload)
 
 
-def decode_dataframe_from_parquet(source_file: Location) -> Any:
+def decode_dataframe_from_parquet(
+    source_file: Path | CloudPath, checksum: ChecksumInfo | None = None
+) -> Any:
     """Decode a dataframe from a `.parquet` file."""
     pd = _pandas()
 
-    file_path = with_suffix(to_local_path(source_file), DEFAULT_PARQUET_EXTENSION)
+    file_path = with_suffix(source_file, DEFAULT_PARQUET_EXTENSION)
     return pd.read_parquet(file_path)
 
 
-def encode_series_as_parquet(value: Any, target_file: Location) -> None:
+def encode_series_as_parquet(value: Any, target_file: Path | CloudPath) -> ChecksumInfo:
     """Encode a pandas Series to a `.parquet` file."""
     if not is_pandas_series(value):
         raise TidyRunSerializationError("Value is not a pandas Series")
 
-    file_path = with_suffix(to_local_path(target_file), DEFAULT_PARQUET_EXTENSION)
-    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path = with_suffix(target_file, DEFAULT_PARQUET_EXTENSION)
 
     series_name = value.name if value.name is not None else "__tidyrun_series__"
     try:
-        value.to_frame(name=series_name).to_parquet(file_path)
+        payload = cast(
+            bytes,
+            value.to_frame(name=series_name).to_parquet(path=None),
+        )
+        file_path.write_bytes(payload)
     except (ImportError, TypeError, ValueError) as exc:
         raise GoToNextEncoderException(
             "Parquet encoder could not serialize this series"
         ) from exc
+    return checksum_from_bytes(payload)
 
 
-def decode_series_from_parquet(source_file: Location) -> Any:
+def decode_series_from_parquet(
+    source_file: Path | CloudPath, checksum: ChecksumInfo | None = None
+) -> Any:
     """Decode a pandas Series from a `.parquet` file."""
     pd = _pandas()
 
-    file_path = with_suffix(to_local_path(source_file), DEFAULT_PARQUET_EXTENSION)
+    file_path = with_suffix(source_file, DEFAULT_PARQUET_EXTENSION)
     df = pd.read_parquet(file_path)
     if len(df.columns) != 1:
         raise TidyRunDeserializationError(
@@ -197,36 +181,40 @@ def decode_series_from_parquet(source_file: Location) -> Any:
     return series
 
 
-def encode_pandas_as_hdf5(value: Any, target_file: Location) -> None:
+def encode_pandas_as_hdf5(value: Any, target_file: Path | CloudPath) -> ChecksumInfo:
     """Encode a pandas DataFrame or Series to HDF5 under key `data`."""
     if not (is_dataframe(value) or is_pandas_series(value)):
         raise TidyRunSerializationError("Value is not a supported pandas object")
 
-    file_path = with_suffix(to_local_path(target_file), DEFAULT_HDF5_EXTENSION)
-    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path = with_suffix(target_file, DEFAULT_HDF5_EXTENSION)
     value.to_hdf(file_path, key="data")
+    return checksum_for_path(file_path)
 
 
-def decode_pandas_from_hdf5(source_file: Location) -> Any:
+def decode_pandas_from_hdf5(
+    source_file: Path | CloudPath, checksum: ChecksumInfo | None = None
+) -> Any:
     """Decode a pandas DataFrame or Series from HDF5 key `data`."""
     pd = _pandas()
 
-    file_path = with_suffix(to_local_path(source_file), DEFAULT_HDF5_EXTENSION)
+    file_path = with_suffix(source_file, DEFAULT_HDF5_EXTENSION)
     return pd.read_hdf(file_path, key="data")
 
 
-def encode_other_as_json(value: Any, target_file: Location) -> None:
+def encode_other_as_json(value: Any, target_file: Path | CloudPath) -> ChecksumInfo:
     """Fallback encoder for non-dict, non-dataframe values using JSON."""
-    file_path = with_suffix(to_local_path(target_file), DEFAULT_JSON_EXTENSION)
-    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path = with_suffix(target_file, DEFAULT_JSON_EXTENSION)
 
-    with file_path.open("w", encoding="utf-8") as f:
-        json.dump(value, f)
+    payload = json.dumps(value).encode("utf-8")
+    file_path.write_bytes(payload)
+    return checksum_from_bytes(payload)
 
 
-def decode_other_from_json(source_file: Location) -> Any:
+def decode_other_from_json(
+    source_file: Path | CloudPath, checksum: ChecksumInfo | None = None
+) -> Any:
     """Decode values previously written with JSON fallback."""
-    file_path = with_suffix(to_local_path(source_file), DEFAULT_JSON_EXTENSION)
+    file_path = with_suffix(source_file, DEFAULT_JSON_EXTENSION)
 
     with file_path.open("r", encoding="utf-8") as f:
         return json.load(f)
@@ -241,7 +229,64 @@ def is_json_serializable(value: Any) -> bool:
         return False
 
 
-def encode_value_as_pickle(value: Any, target_file: Location) -> None:
+def has_serialized_path(value: Any) -> bool:
+    """Check if a value has a serialized reference that can be symlinked.
+
+    Objects with __serialized_path__ attribute are views of
+    previously serialized data and should be serialized as symlinks
+    rather than re-serializing. LazyDict implements this interface.
+    """
+    return hasattr(value, "__serialized_path__")
+
+
+def encode_value_as_symlink(value: Any, target_path: Path | CloudPath) -> ChecksumInfo:
+    """Encode a value with a serialized reference as a symlink.
+
+    For local filesystems, creates an actual symlink.
+    For cloud storage (S3, etc.), stores the target path in metadata.
+    The actual symlink metadata is written by write_metadata with symlink=True.
+    """
+    if not hasattr(value, "__serialized_path__"):
+        raise TidyRunSerializationError(
+            "Value does not have a serialized reference; cannot encode as symlink"
+        )
+    serialized_path = getattr(value, "__serialized_path__")
+
+    # Use the original checksum
+    checksum = getattr(value, "__checksum__")
+    assert isinstance(checksum, ChecksumInfo)
+
+    try:
+        relative_target = serialized_path.relative_to(target_path.parent)
+    except ValueError:
+        relative_target = serialized_path
+
+    # For local paths, create actual symlinks.
+    if isinstance(target_path, Path):
+        target_path.symlink_to(relative_target)
+
+    return checksum
+
+
+def decode_value_from_symlink(
+    source_path: Path | CloudPath, checksum: ChecksumInfo | None = None
+) -> Any:
+    """Decode a symlink reference by deserializing the target."""
+    from .api import deserialize
+
+    # For local paths, follow the symlink
+    if isinstance(source_path, Path) and source_path.is_symlink():
+        target_path = source_path.resolve()
+        return deserialize(target_path)
+
+    # For cloud paths, metadata will have the target
+    # This is handled in deserialize() which passes target_path
+    raise TidyRunDeserializationError(
+        f"Expected symlink at {source_path} or symlink metadata"
+    )
+
+
+def encode_value_as_pickle(value: Any, target_file: Path | CloudPath) -> ChecksumInfo:
     """Last-resort encoder: serialize any Python object with pickle."""
     pickle_backend: Any
     try:
@@ -249,14 +294,16 @@ def encode_value_as_pickle(value: Any, target_file: Location) -> None:
     except ImportError:
         import pickle as pickle_backend
 
-    file_path = with_suffix(to_local_path(target_file), DEFAULT_PICKLE_EXTENSION)
-    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path = with_suffix(target_file, DEFAULT_PICKLE_EXTENSION)
 
-    with file_path.open("wb") as f:
-        pickle_backend.dump(value, f)
+    payload = cast(bytes, pickle_backend.dumps(value))
+    file_path.write_bytes(payload)
+    return checksum_from_bytes(payload)
 
 
-def decode_value_from_pickle(source_file: Location) -> Any:
+def decode_value_from_pickle(
+    source_file: Path | CloudPath, checksum: ChecksumInfo | None = None
+) -> Any:
     """Decode a value previously written with pickle."""
     pickle_backend: Any
     try:
@@ -264,7 +311,7 @@ def decode_value_from_pickle(source_file: Location) -> Any:
     except ImportError:
         import pickle as pickle_backend
 
-    file_path = with_suffix(to_local_path(source_file), DEFAULT_PICKLE_EXTENSION)
+    file_path = with_suffix(source_file, DEFAULT_PICKLE_EXTENSION)
 
     with file_path.open("rb") as f:
         return pickle_backend.load(f)

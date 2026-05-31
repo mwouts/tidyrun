@@ -9,12 +9,12 @@ into their original values using toml.
 """
 
 from datetime import date, datetime, time
-from typing import Any, Type, Union, cast
+from typing import Any, Type, cast
 
 import toml
 from .constants import TIDYRUN_METADATA_EXTENSION
 
-Key = Union[str, int, float, bool, date, datetime, time]
+Key = str | int | float | bool | date | datetime | time
 _KEY_NAME = "key"
 
 

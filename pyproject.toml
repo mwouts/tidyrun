@@ -17,7 +17,6 @@ classifiers = [
   "Intended Audience :: Science/Research",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -25,11 +24,12 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Typing :: Typed",
 ]
-version = "0.0.4"
+version = "0.0.5dev0"
 requires-python = ">= 3.9"
 dependencies = [
     "toml>=0.10",
     "cloudpickle>=3.0",
+    "cloudpathlib>=0.20",
 ]
 
 [project.optional-dependencies]

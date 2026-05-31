@@ -22,6 +22,7 @@ requirements:
     - python >=3.9
     - toml >=0.10
     - cloudpickle >=3.0
+    - cloudpathlib >=0.20
 
 tests:
   - python:
