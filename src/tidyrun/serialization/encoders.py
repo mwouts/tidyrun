@@ -2,9 +2,11 @@ import importlib.util
 import json
 from pathlib import Path
 from typing import Any, cast
+
 from cloudpathlib import CloudPath
-from tidyrun.keys import encode_key
+
 from tidyrun.constants import TIDYRUN_DEFAULT_HASH_ALGORITHM
+from tidyrun.keys import encode_key
 
 from .lazy_dict import LazyDict
 from .metadata import (
@@ -104,9 +106,11 @@ def encode_dict_as_folder(
     )
 
 
-def decode_dict_from_folder(source_dir: Path | CloudPath) -> Any:
+def decode_dict_from_folder(
+    source_dir: Path | CloudPath, checksum: ChecksumInfo | None = None
+) -> Any:
     """Decode a folder tree into a lazy dictionary-like object."""
-    return LazyDict(source_dir)
+    return LazyDict(source_dir, checksum)
 
 
 def encode_dataframe_as_parquet(
@@ -127,7 +131,9 @@ def encode_dataframe_as_parquet(
     return checksum_from_bytes(payload)
 
 
-def decode_dataframe_from_parquet(source_file: Path | CloudPath) -> Any:
+def decode_dataframe_from_parquet(
+    source_file: Path | CloudPath, checksum: ChecksumInfo | None = None
+) -> Any:
     """Decode a dataframe from a `.parquet` file."""
     pd = _pandas()
 
@@ -156,7 +162,9 @@ def encode_series_as_parquet(value: Any, target_file: Path | CloudPath) -> Check
     return checksum_from_bytes(payload)
 
 
-def decode_series_from_parquet(source_file: Path | CloudPath) -> Any:
+def decode_series_from_parquet(
+    source_file: Path | CloudPath, checksum: ChecksumInfo | None = None
+) -> Any:
     """Decode a pandas Series from a `.parquet` file."""
     pd = _pandas()
 
@@ -183,7 +191,9 @@ def encode_pandas_as_hdf5(value: Any, target_file: Path | CloudPath) -> Checksum
     return checksum_for_path(file_path)
 
 
-def decode_pandas_from_hdf5(source_file: Path | CloudPath) -> Any:
+def decode_pandas_from_hdf5(
+    source_file: Path | CloudPath, checksum: ChecksumInfo | None = None
+) -> Any:
     """Decode a pandas DataFrame or Series from HDF5 key `data`."""
     pd = _pandas()
 
@@ -200,7 +210,9 @@ def encode_other_as_json(value: Any, target_file: Path | CloudPath) -> ChecksumI
     return checksum_from_bytes(payload)
 
 
-def decode_other_from_json(source_file: Path | CloudPath) -> Any:
+def decode_other_from_json(
+    source_file: Path | CloudPath, checksum: ChecksumInfo | None = None
+) -> Any:
     """Decode values previously written with JSON fallback."""
     file_path = with_suffix(source_file, DEFAULT_JSON_EXTENSION)
 
@@ -215,6 +227,66 @@ def is_json_serializable(value: Any) -> bool:
         return True
     except (TypeError, ValueError):
         return False
+
+
+def has_serialized_path(value: Any) -> bool:
+    """Check if a value has a serialized reference that can be symlinked.
+
+    Objects with __serialized_path__ attribute are views of
+    previously serialized data and should be serialized as symlinks
+    rather than re-serializing. LazyDict implements this interface.
+    """
+    return hasattr(value, "__serialized_path__")
+
+
+def encode_value_as_symlink(value: Any, target_path: Path | CloudPath) -> ChecksumInfo:
+    """Encode a value with a serialized reference as a symlink.
+
+    For local filesystems, creates an actual symlink.
+    For cloud storage (S3, etc.), stores the target path in metadata.
+    The actual symlink metadata is written by write_metadata with symlink=True.
+    """
+    if not hasattr(value, "__serialized_path__"):
+        raise TidyRunSerializationError(
+            "Value does not have a serialized reference; cannot encode as symlink"
+        )
+    serialized_path = getattr(value, "__serialized_path__")
+
+    # Use the original checksum if available.
+    if hasattr(value, "__checksum__"):
+        checksum = getattr(value, "__checksum__")
+        assert isinstance(checksum, ChecksumInfo)
+    else:
+        checksum = None
+
+    try:
+        relative_target = serialized_path.relative_to(target_path.parent)
+    except ValueError:
+        relative_target = serialized_path
+
+    # For local paths, create actual symlinks.
+    if isinstance(target_path, Path):
+        target_path.symlink_to(relative_target)
+
+    return checksum
+
+
+def decode_value_from_symlink(
+    source_path: Path | CloudPath, checksum: ChecksumInfo | None = None
+) -> Any:
+    """Decode a symlink reference by deserializing the target."""
+    from .api import deserialize
+
+    # For local paths, follow the symlink
+    if isinstance(source_path, Path) and source_path.is_symlink():
+        target_path = source_path.resolve()
+        return deserialize(target_path)
+
+    # For cloud paths, metadata will have the target
+    # This is handled in deserialize() which passes target_path
+    raise TidyRunDeserializationError(
+        f"Expected symlink at {source_path} or symlink metadata"
+    )
 
 
 def encode_value_as_pickle(value: Any, target_file: Path | CloudPath) -> ChecksumInfo:
@@ -232,7 +304,9 @@ def encode_value_as_pickle(value: Any, target_file: Path | CloudPath) -> Checksu
     return checksum_from_bytes(payload)
 
 
-def decode_value_from_pickle(source_file: Path | CloudPath) -> Any:
+def decode_value_from_pickle(
+    source_file: Path | CloudPath, checksum: ChecksumInfo | None = None
+) -> Any:
     """Decode a value previously written with pickle."""
     pickle_backend: Any
     try:

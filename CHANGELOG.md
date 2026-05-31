@@ -6,12 +6,10 @@ All notable changes to TidyRun are documented in this file.
 
 ### Changed
 
-- Updated serialization path handling to normalize input paths through `cloudpathlib.AnyPath`, enabling a single path abstraction for local and cloud-backed locations.
-- Updated serialization metadata checksum shape to use a flat `checksum` object (`algorithm`, `digest`) instead of nested output checksum tables.
-- Updated `serialize(...)` to return a `ChecksumInfo` value so callers can compose higher-level checksums without re-reading serialized outputs.
-- Updated JSON and pickle fallback encoders to compute checksums from in-memory payload bytes during write.
-- Updated parquet DataFrame/Series encoders to serialize to in-memory bytes, write once, and hash those bytes directly.
-- Updated dict-folder checksum calculation to compose parent checksums from encoded child names and child checksums.
+- The serialization to s3, or other cloud providers, is now handled by `cloudpathlib`
+- The LazyDict object is even lazier now: it won't even list the keys unless you access them (at this stage the LazyDict objects have no cache at all)
+- LazyDict are serialized as symlinks
+- The checksum calculation is done in memory when possible (e.g. for all formats but HDF5, for which we need to write on disk and re-read the bytes)
 
 ## [0.0.4] — (2026-05-16)
 

@@ -1,7 +1,8 @@
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
 
-from cloudpathlib import CloudPath, AnyPath
+from cloudpathlib import AnyPath, CloudPath
+
 
 from .encoders import (
     can_encode_with_hdf5,
@@ -13,12 +14,15 @@ from .encoders import (
     decode_pandas_from_hdf5,
     decode_series_from_parquet,
     decode_value_from_pickle,
+    decode_value_from_symlink,
     encode_dataframe_as_parquet,
     encode_dict_as_folder,
     encode_other_as_json,
     encode_pandas_as_hdf5,
     encode_series_as_parquet,
     encode_value_as_pickle,
+    encode_value_as_symlink,
+    has_serialized_path,
     is_json_serializable,
     is_mapping,
 )
@@ -41,6 +45,12 @@ from .types import (
 def default_encoders() -> tuple[EncoderSpec, ...]:
     """Return default encoder order."""
     return (
+        EncoderSpec(
+            name="symlink",
+            predicate=has_serialized_path,
+            serializer=encode_value_as_symlink,
+            deserializer=decode_value_from_symlink,
+        ),
         EncoderSpec(
             name="dict-folder",
             predicate=is_mapping,
@@ -106,7 +116,7 @@ def _deserialize_without_metadata(
             continue
 
         try:
-            return encoder.deserializer(base_path)
+            return encoder.deserializer(base_path, None)
         except Exception as exc:
             last_error = exc
 
@@ -157,11 +167,18 @@ def serialize(
             f"No encoder found for value of type {type(value).__name__!r}"
         )
 
+    symlink_target: str | None = None
+    if selected_encoder.name == "symlink":
+        import os
+
+        symlink_target = cast(str, os.fspath(value))
+
     write_metadata(
         path,
         encoding=selected_encoder.name,
         suffix=suffix_for_encoder(selected_encoder.name),
         checksum=checksum,
+        symlink_target=symlink_target,
     )
     return checksum
 
@@ -188,4 +205,17 @@ def deserialize(
             f"Unknown encoder in metadata: {encoder_name!r}"
         )
 
-    return encoder.deserializer(path)
+    checksum = metadata.get("checksum")
+    assert checksum is None or isinstance(checksum, ChecksumInfo)
+
+    # Symlink metadata can point to another serialized location.
+    if encoder_name == "symlink":
+        target = metadata.get("symlink_target")
+        if isinstance(target, str):
+            if "://" in target:
+                target_path = AnyPath(target)
+            else:
+                target_path = AnyPath(path.parent / Path(target))
+            return deserialize(target_path, encoders=encoder_list)
+
+    return encoder.deserializer(path, checksum)

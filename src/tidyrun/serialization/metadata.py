@@ -34,6 +34,8 @@ def metadata_exists(base_path: Path | CloudPath) -> bool:
 
 
 def suffix_for_encoder(encoder_name: str) -> str:
+    if encoder_name == "symlink":
+        return ""
     if encoder_name == "dict-folder":
         return ""
     if encoder_name == "dataframe-parquet":
@@ -55,6 +57,7 @@ def write_metadata(
     encoding: str,
     suffix: str,
     checksum: ChecksumInfo,
+    symlink_target: str | None = None,
 ) -> None:
     metadata_file = metadata_path(base_path)
     metadata: dict[str, Any] = {
@@ -67,13 +70,16 @@ def write_metadata(
         },
     }
 
+    if symlink_target is not None:
+        metadata["symlink"] = {"target": symlink_target}
+
     metadata_file.write_text(
         toml.dumps(metadata),  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
         encoding="utf-8",
     )
 
 
-def read_metadata(base_path: Path | CloudPath) -> dict[str, str]:
+def read_metadata(base_path: Path | CloudPath) -> dict[str, Any]:
     metadata_file = metadata_path(base_path)
     if not metadata_file.exists():
         raise TidyRunDeserializationError(f"Missing metadata file: {metadata_file}")
@@ -98,7 +104,29 @@ def read_metadata(base_path: Path | CloudPath) -> dict[str, str]:
     if not isinstance(encoding, str) or not isinstance(suffix, str):
         raise TidyRunDeserializationError(f"Invalid metadata in file: {metadata_file}")
 
-    return {"encoding": encoding, "suffix": suffix}
+    result: dict[str, Any] = {"encoding": encoding, "suffix": suffix}
+
+    # Extract checksum if present
+    checksum_data = data.get("checksum")
+    if isinstance(checksum_data, dict):
+        checksum_data = cast(dict[str, Any], checksum_data)
+        algorithm = checksum_data.get("algorithm")
+        digest = checksum_data.get("digest")
+        if isinstance(algorithm, str) and isinstance(digest, str):
+            result["checksum"] = ChecksumInfo(
+                algorithm=algorithm,
+                digest=digest,
+            )
+
+    # Add symlink target if present
+    symlink_data = data.get("symlink")
+    if isinstance(symlink_data, dict):
+        symlink_data = cast(dict[str, Any], symlink_data)
+        target = symlink_data.get("target")
+        if isinstance(target, str):
+            result["symlink_target"] = target
+
+    return result
 
 
 def checksum_from_bytes(
@@ -114,24 +142,11 @@ def checksum_for_path(
 ) -> ChecksumInfo:
     digest = hashlib.new(algorithm)
 
-    if path.is_file():
-        with path.open("rb") as file_handle:
-            for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return ChecksumInfo(algorithm=algorithm, digest=digest.hexdigest())
-
-    if path.is_dir():
-        for file_path in sorted((p for p in path.rglob("*") if p.is_file())):
-            relative = file_path.relative_to(path).as_posix().encode("utf-8")
-            digest.update(relative)
-            digest.update(b"\0")
-            with file_path.open("rb") as file_handle:
-                for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            digest.update(b"\0")
-        return ChecksumInfo(algorithm=algorithm, digest=digest.hexdigest())
-
-    raise TidyRunSerializationError(f"Cannot checksum missing path: {path}")
+    assert path.is_file()
+    with path.open("rb") as file_handle:
+        for chunk in iter(lambda: file_handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return ChecksumInfo(algorithm=algorithm, digest=digest.hexdigest())
 
 
 def checksum_for_named_children(

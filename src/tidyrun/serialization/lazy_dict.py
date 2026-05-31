@@ -10,6 +10,7 @@ from tidyrun.constants import TIDYRUN_METADATA_EXTENSION
 
 from tidyrun.keys import Key, encode_key, decode_key
 from .metadata import metadata_exists, read_metadata
+from .types import ChecksumInfo
 from .types import TidyRunDeserializationError
 
 
@@ -25,13 +26,11 @@ def _decoded_name_from_payload_name(name: str) -> str | None:
     return name
 
 
-def _entry_is_lazy_dict(base_dir: Path | CloudPath, encoded_name: str) -> bool:
-    child_path = base_dir / encoded_name
+def _entry_is_lazy_dict(serialized_path: Path | CloudPath, encoded_name: str) -> bool:
+    child_path = serialized_path / encoded_name
     if metadata_exists(child_path):
-        try:
-            return read_metadata(child_path)["encoding"] == "dict-folder"
-        except TidyRunDeserializationError:
-            return False
+        metadata = read_metadata(child_path)
+        return metadata["encoding"] == "dict-folder"
     return child_path.is_dir()
 
 
@@ -40,27 +39,38 @@ class LazyDict(Mapping[Key, Any]):
 
     def __init__(
         self,
-        base_dir: Path | CloudPath,
+        serialized_path: Path | CloudPath,
+        checksum: ChecksumInfo | None = None,
     ) -> None:
-        self._base_dir = base_dir
+        self.__serialized_path__ = serialized_path
+        self.__checksum__ = checksum
+
+    """Marker that this LazyDict can be serialized as a symlink reference."""
+
+    def __fspath__(self) -> str:
+        """Return the path this LazyDict was loaded from.
+
+        This enables symlink serialization via os.fspath() protocol.
+        """
+        return str(self.__serialized_path__)
 
     def _encoded_entries(self) -> list[str]:
-        if not self._base_dir.is_dir():
+        if not self.__serialized_path__.is_dir():
             raise TidyRunDeserializationError(
-                f"Expected directory, got: {self._base_dir}"
+                f"Expected directory, got: {self.__serialized_path__}"
             )
 
-        base_dir = cast(Any, self._base_dir)
+        serialized_path = cast(Any, self.__serialized_path__)
         entries: list[str] = []
         metadata_files = sorted(
-            base_dir.glob(f"*{TIDYRUN_METADATA_EXTENSION}"), key=lambda p: p.name
+            serialized_path.glob(f"*{TIDYRUN_METADATA_EXTENSION}"), key=lambda p: p.name
         )
         if metadata_files:
             for metadata_file in metadata_files:
                 encoded_name = metadata_file.name[: -len(TIDYRUN_METADATA_EXTENSION)]
                 entries.append(encoded_name)
         else:
-            for entry in sorted(base_dir.iterdir(), key=lambda p: p.name):
+            for entry in sorted(serialized_path.iterdir(), key=lambda p: p.name):
                 encoded_name = _decoded_name_from_payload_name(entry.name)
                 if encoded_name is None:
                     continue
@@ -78,7 +88,7 @@ class LazyDict(Mapping[Key, Any]):
         else:
             name = encode_key(key)
 
-        key_dir = self._base_dir / name
+        key_dir = self.__serialized_path__ / name
         return deserialize(key_dir)
 
     def __iter__(self) -> Iterator[Key]:
@@ -163,7 +173,7 @@ class LazyDict(Mapping[Key, Any]):
                     continue
 
                 encoded_name = encode_key(key)
-                if _entry_is_lazy_dict(node._base_dir, encoded_name):
+                if _entry_is_lazy_dict(node.__serialized_path__, encoded_name):
                     if names is not None and len(current_path) >= len(names):
                         raise ValueError(
                             f"Encountered LazyDict at depth {len(current_path)}, "

@@ -15,7 +15,7 @@ class ChecksumInfo:
 
 
 Serializer = Callable[[Any, Path | CloudPath], ChecksumInfo]
-Deserializer = Callable[[Path | CloudPath], Any]
+Deserializer = Callable[[Path | CloudPath, ChecksumInfo | None], Any]
 
 DEFAULT_JSON_EXTENSION = ".json"
 DEFAULT_PARQUET_EXTENSION = ".parquet"

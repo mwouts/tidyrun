@@ -25,7 +25,7 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Typing :: Typed",
 ]
-version = "0.0.5"
+version = "0.0.5dev0"
 requires-python = ">= 3.9"
 dependencies = [
     "toml>=0.10",
