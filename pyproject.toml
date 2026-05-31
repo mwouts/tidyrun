@@ -30,6 +30,7 @@ requires-python = ">= 3.9"
 dependencies = [
     "toml>=0.10",
     "cloudpickle>=3.0",
+    "cloudpathlib>=0.20",
 ]
 
 [project.optional-dependencies]
@@ -140,7 +141,6 @@ toml = "*"
 pandas = "*"
 pyarrow = "*"  # parquet support
 pytables = "*"  # HDF5 support
-cloudpathlib = "*"
 mkdocs = ">=1.5"
 mkdocs-material = ">=9.0"
 mkdocstrings = ">=0.24"
