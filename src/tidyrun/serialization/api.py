@@ -167,6 +167,8 @@ def serialize(
             f"No encoder found for value of type {type(value).__name__!r}"
         )
 
+    assert checksum is not None, "Encoder did not return checksum"
+
     symlink_target: str | None = None
     if selected_encoder.name == "symlink":
         import os

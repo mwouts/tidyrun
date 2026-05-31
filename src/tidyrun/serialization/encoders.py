@@ -252,12 +252,9 @@ def encode_value_as_symlink(value: Any, target_path: Path | CloudPath) -> Checks
         )
     serialized_path = getattr(value, "__serialized_path__")
 
-    # Use the original checksum if available.
-    if hasattr(value, "__checksum__"):
-        checksum = getattr(value, "__checksum__")
-        assert isinstance(checksum, ChecksumInfo)
-    else:
-        checksum = None
+    # Use the original checksum
+    checksum = getattr(value, "__checksum__")
+    assert isinstance(checksum, ChecksumInfo)
 
     try:
         relative_target = serialized_path.relative_to(target_path.parent)
