@@ -56,6 +56,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - DAG Guide: dag.md
+  - Executors: executors.md
   - Serialization Guide: serialization.md
   - Contributing: contributing.md
   - Quick Start: quick_start.md

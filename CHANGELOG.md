@@ -2,15 +2,38 @@
 
 All notable changes to TidyRun are documented in this file.
 
-## [Unreleased]
+## [0.0.5] — (2026-05-31)
+
+### Added
+
+- `tidyrun-batch-entrypoint` console script: fixes a correctness bug in AWS
+  Batch array jobs where all children would run the same job. Single jobs read
+  `TIDYRUN_JOB_ID`; array children pick the right id via
+  `AWS_BATCH_JOB_ARRAY_INDEX` + `TIDYRUN_JOB_IDS_JSON`.
+- `extra_env` on `AwsBatchExecutor`: inject static environment variables (e.g.
+  `GIT_REPO_URL`, `GIT_COMMIT`) into every submitted container.
+- `execute_plan()`: run all jobs in a plan directory without a `DAG` object,
+  for the decentralised case where multiple scripts share one plan dir.
+- `DAG.materialize(prefix=...)`: namespace all job ids under a prefix so
+  multiple DAGs can write to the same plan directory without conflict.
+- Job-state sentinels: `.running` at start, `.failed` on error (TOML with
+  traceback). `get_job_states()` returns `"pending"`, `"running"`, `"failed"`,
+  or `"succeeded"` for every job in a plan.
+- `skip_running` flag on `execute_materialized()` and `execute_plan()`.
+- Moto-based AWS Batch integration tests covering the full boto3 serialisation
+  path, complementing the existing fake-client unit tests.
+- Unified Executors documentation page covering local, SLURM, and AWS Batch
+  with a shared git-commit-pinning example.
 
 ### Changed
 
-- The serialization to s3, or other cloud providers, is now handled by `cloudpathlib`
-- The LazyDict object is even lazier now: it won't even list the keys unless you access them (at this stage the LazyDict objects have no cache at all)
-- LazyDict are serialized as symlinks
-- The checksum calculation is done in memory when possible (e.g. for all formats but HDF5, for which we need to write on disk and re-read the bytes)
-- We have dropped support for Python 3.10
+- Reviewed and simplified the DAG plan format and execution path.
+- Plan-reading helpers extracted to `plan.py`; executors moved to
+  `executors/`; public API unchanged.
+- S3 serialisation now handled by `cloudpathlib`.
+- `LazyDict` is lazier: keys are not listed until accessed.
+- `LazyDict` objects are serialised as symlinks.
+- Dropped support for Python 3.10.
 
 ## [0.0.4] — (2026-05-16)
 

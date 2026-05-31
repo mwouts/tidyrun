@@ -342,9 +342,10 @@ def test_dag_materialize_uploads_plan_tree_to_s3() -> None:
         response = client.list_objects_v2(Bucket=bucket_name, Prefix="plans/run_001")
         keys = {item["Key"] for item in response.get("Contents", [])}
 
-        assert "plans/run_001/plan.tidyrun" in keys
+        # Schema v1: no plan.tidyrun or callables/ dir; definition is self-contained.
         assert "plans/run_001/definitions/a.tidyrun" in keys
-        assert any(key.startswith("plans/run_001/callables/a/") for key in keys)
+        assert not any("plan.tidyrun" in key for key in keys)
+        assert not any("/callables/" in key for key in keys)
 
 
 @pytest.mark.skip(reason="S3 upload utility was removed")
