@@ -711,6 +711,58 @@ def test_parametrized_job_dependency_by_parameter_name_selector(
         assert result_dict["consume"][v] == v * 3
 
 
+@pytest.mark.parametrize("produce_first", [True, False])
+def test_parametrized_job_dep_whole_pjob_as_kwarg(
+    tmp_path: Path, produce_first: bool
+) -> None:
+    """Passing a whole ParametrizedJob as dep kwarg yields per-instance outputs."""
+
+    def produce(x: int) -> int:
+        return x * 2
+
+    def consume(x: int, dep: int) -> int:
+        return dep + x
+
+    values = [1, 2, 3]
+    producer = ParametrizedJob(
+        func=produce,
+        parameter_names=["x"],
+        parameter_values=[(v,) for v in values],
+    )
+    consumer = ParametrizedJob(
+        func=consume,
+        parameter_names=["x"],
+        parameter_values=[(v,) for v in values],
+        kwargs={"dep": producer},
+    )
+
+    dag = DAG()
+    if produce_first:
+        dag["produce"] = producer
+        dag["consume"] = consumer
+    else:
+        dag["consume"] = consumer
+        dag["produce"] = producer
+
+    plan_dir = dag.materialize(tmp_path / "plan")
+
+    definition_names = {
+        str(f.relative_to(plan_dir / "definitions").with_suffix("").as_posix())
+        for f in (plan_dir / "definitions").rglob("*.tidyrun")
+    }
+    assert "arg" not in " ".join(definition_names), (
+        f"Extra arg-named definition files found: {definition_names}"
+    )
+    assert definition_names == {"produce", "consume"}
+
+    result = dag.evaluate(tmp_path / "run", dag_path=plan_dir)
+    result_dict = result.to_dict()
+    assert set(result_dict["produce"].keys()) == set(values)
+    assert set(result_dict["consume"].keys()) == set(values)
+    for v in values:
+        assert result_dict["consume"][v] == v * 3
+
+
 def test_get_job_states(tmp_path: Path) -> None:
     dag = DAG()
     dag["a"] = Job(func=_join_with_sep, kwargs={"left": "x", "right": "y"})
