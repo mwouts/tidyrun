@@ -8,15 +8,15 @@ import sys
 
 import pytest
 
-from tidyrun.slurm_executor import SlurmExecutor
-
-
-def _double(x: int) -> int:
-    return x * 2
+from tidyrun.executors.slurm import SlurmExecutor
 
 
 def _noop_job(_plan_dir: str, _job_id: str) -> None:
     return None
+
+
+def _job_returning_42(_plan_dir: str, _job_id: str) -> int:
+    return 42
 
 
 def test_slurm_executor_submit_and_collect_result(
@@ -61,10 +61,10 @@ def test_slurm_executor_submit_and_collect_result(
 
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    monkeypatch.setattr("tidyrun.slurm_executor.subprocess.run", fake_run)
+    monkeypatch.setattr("tidyrun.executors.slurm.subprocess.run", fake_run)
 
     executor: Executor = SlurmExecutor(tmp_path, poll_interval_seconds=0.0)
-    future = executor.submit(_double, 21)
+    future = executor.submit(_job_returning_42, "plan/dir", "test/job")
     assert future.result(timeout=1.0) == 42
     executor.shutdown()
 
@@ -92,10 +92,10 @@ def test_slurm_executor_propagates_remote_error(
 
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    monkeypatch.setattr("tidyrun.slurm_executor.subprocess.run", fake_run)
+    monkeypatch.setattr("tidyrun.executors.slurm.subprocess.run", fake_run)
 
     executor = SlurmExecutor(tmp_path, poll_interval_seconds=0.0, cleanup_files=False)
-    future = executor.submit(_double, 2)
+    future = executor.submit(_noop_job, "plan/dir", "test/job")
     with pytest.raises(RuntimeError, match="remote traceback"):
         future.result(timeout=1.0)
     executor.shutdown()
@@ -207,7 +207,7 @@ def test_slurm_executor_submit_with_options_overrides_defaults(
 
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    monkeypatch.setattr("tidyrun.slurm_executor.subprocess.run", fake_run)
+    monkeypatch.setattr("tidyrun.executors.slurm.subprocess.run", fake_run)
 
     executor = SlurmExecutor(
         tmp_path,
@@ -216,8 +216,9 @@ def test_slurm_executor_submit_with_options_overrides_defaults(
         poll_interval_seconds=0.0,
     )
     future = executor.submit_with_options(
-        _double,
-        42,
+        _noop_job,
+        "plan/dir",
+        "test/job",
         sbatch_options={"time": "00:05:00", "mem": "2G"},
     )
     assert future.result(timeout=1.0) == 84
@@ -266,7 +267,7 @@ def test_slurm_executor_sets_job_name_from_job_id(
 
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    monkeypatch.setattr("tidyrun.slurm_executor.subprocess.run", fake_run)
+    monkeypatch.setattr("tidyrun.executors.slurm.subprocess.run", fake_run)
 
     executor = SlurmExecutor(tmp_path, poll_interval_seconds=0.0)
     future = executor.submit(_noop_job, "plan", "a/b/c")
@@ -307,7 +308,7 @@ def test_slurm_executor_submit_array_with_options(
 
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    monkeypatch.setattr("tidyrun.slurm_executor.subprocess.run", fake_run)
+    monkeypatch.setattr("tidyrun.executors.slurm.subprocess.run", fake_run)
 
     executor = SlurmExecutor(tmp_path, poll_interval_seconds=0.0)
     submission = executor.submit_array_with_options(

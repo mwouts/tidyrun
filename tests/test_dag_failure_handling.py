@@ -130,23 +130,23 @@ def test_skip_completed_skips_already_run_jobs(tmp_path: Path) -> None:
     plan_dir = tmp_path / "plan"
     dag.materialize(plan_dir)
 
+    out_path = tmp_path / "out1"
     dag.execute_materialized(
         dag_path=plan_dir,
-        output_path=tmp_path / "out1",
+        output_path=out_path,
         execution_mode="thread",
     )
 
-    # Tamper with "a"'s metadata to confirm it is not overwritten on re-run
-    a_meta = Path(
-        str(job_output_base(plan_dir / "outputs", "a")) + TIDYRUN_METADATA_EXTENSION
-    )
+    # Tamper with "a"'s metadata to confirm it is not overwritten on re-run.
+    # With the direct-write approach outputs live under output_path, not plan/outputs.
+    a_meta = Path(str(job_output_base(out_path, "a")) + TIDYRUN_METADATA_EXTENSION)
     sentinel_content = a_meta.read_text() + "\n# sentinel"
     a_meta.write_text(sentinel_content)
 
     # Second execution with skip_completed=True should NOT re-write "a"'s output
     dag.execute_materialized(
         dag_path=plan_dir,
-        output_path=tmp_path / "out2",
+        output_path=out_path,
         execution_mode="thread",
         skip_completed=True,
     )
@@ -173,8 +173,9 @@ def test_skip_completed_reruns_only_failed_jobs(tmp_path: Path) -> None:
     assert exc_info.value.failed_job_id == "b"
 
     # "a"'s output was written; "b"'s was not
-    assert job_output_exists(plan_dir / "outputs", "a")
-    assert not job_output_exists(plan_dir / "outputs", "b")
+    # With direct-write approach outputs live under output_path
+    assert job_output_exists(tmp_path / "out", "a")
+    assert not job_output_exists(tmp_path / "out", "b")
 
     # Second run: "b" now works; resubmit with skip_completed=True
     b_fixed = Job(func=_add, kwargs={"x": a, "y": 10})
@@ -201,21 +202,22 @@ def test_execute_materialized_raises_if_outputs_exist_without_skip_completed(
         }
     )
     plan_dir = tmp_path / "plan"
+    out_dir = tmp_path / "out"
     dag.materialize(plan_dir)
 
-    # First execution writes outputs to the materialized plan.
+    # First execution writes outputs to out_dir.
     dag.execute_materialized(
         dag_path=plan_dir,
-        output_path=tmp_path / "out1",
+        output_path=out_dir,
         execution_mode="thread",
     )
 
-    # Re-running without skip_completed should fail fast instead of mixing
-    # previously written and newly computed outputs.
+    # Re-running to the SAME output_path without skip_completed should fail fast
+    # instead of mixing previously written and newly computed outputs.
     with pytest.raises(ValueError, match="skip_completed=True"):
         dag.execute_materialized(
             dag_path=plan_dir,
-            output_path=tmp_path / "out2",
+            output_path=out_dir,
             execution_mode="thread",
         )
 
@@ -276,20 +278,22 @@ def test_clear_outputs_removes_all_outputs(tmp_path: Path) -> None:
         }
     )
     plan_dir = tmp_path / "plan"
+    out_dir = tmp_path / "out"
     dag.materialize(plan_dir)
     dag.execute_materialized(
         dag_path=plan_dir,
-        output_path=tmp_path / "out",
+        output_path=out_dir,
         execution_mode="thread",
     )
 
-    assert job_output_exists(plan_dir / "outputs", "a")
-    assert job_output_exists(plan_dir / "outputs", "b")
+    # Outputs live under out_dir (the output_path), not plan/outputs.
+    assert job_output_exists(out_dir, "a")
+    assert job_output_exists(out_dir, "b")
 
-    dag.clear_outputs(plan_dir)
+    dag.clear_outputs(plan_dir, output_path=out_dir)
 
-    assert not job_output_exists(plan_dir / "outputs", "a")
-    assert not job_output_exists(plan_dir / "outputs", "b")
+    assert not job_output_exists(out_dir, "a")
+    assert not job_output_exists(out_dir, "b")
 
 
 def test_clear_outputs_removes_specific_jobs(tmp_path: Path) -> None:
@@ -300,17 +304,18 @@ def test_clear_outputs_removes_specific_jobs(tmp_path: Path) -> None:
         }
     )
     plan_dir = tmp_path / "plan"
+    out_dir = tmp_path / "out"
     dag.materialize(plan_dir)
     dag.execute_materialized(
         dag_path=plan_dir,
-        output_path=tmp_path / "out",
+        output_path=out_dir,
         execution_mode="thread",
     )
 
-    dag.clear_outputs(plan_dir, job_ids=["a"])
+    dag.clear_outputs(plan_dir, job_ids=["a"], output_path=out_dir)
 
-    assert not job_output_exists(plan_dir / "outputs", "a")
-    assert job_output_exists(plan_dir / "outputs", "b")
+    assert not job_output_exists(out_dir, "a")
+    assert job_output_exists(out_dir, "b")
 
 
 def test_clear_outputs_noop_if_no_outputs_dir(tmp_path: Path) -> None:

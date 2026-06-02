@@ -1,4 +1,4 @@
-from tidyrun.executors.slurm import SlurmExecutor
 from tidyrun.executors.aws_batch import AwsBatchExecutor
+from tidyrun.executors.slurm import SlurmExecutor
 
-__all__ = ["SlurmExecutor", "AwsBatchExecutor"]
+__all__ = ["AwsBatchExecutor", "SlurmExecutor"]

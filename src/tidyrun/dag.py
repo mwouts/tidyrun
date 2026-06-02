@@ -14,7 +14,6 @@ from datetime import date, datetime, time
 import os
 import pickle
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -24,7 +23,7 @@ from urllib.parse import urlparse
 from cloudpathlib import AnyPath, CloudPath
 import toml
 
-from tidyrun.job import Job, ParametrizedJob
+from tidyrun.job import Job, validate_callable_bindings
 from tidyrun.keys import Key, encode_key
 from tidyrun.plan import (
     PlanPaths,
@@ -34,7 +33,6 @@ from tidyrun.plan import (
     job_output_base,
     job_output_exists,
     normalize_job_id,
-    resolve_ref_from_outputs,
     running_path,
     to_path,
     load_callable,
@@ -42,7 +40,7 @@ from tidyrun.plan import (
     load_job_inputs,
 )
 
-Node = Union[Job, ParametrizedJob, "DAG"]
+Node = Union[Job, "DAG"]
 ProgressCallback = Callable[[str], None]
 
 
@@ -60,6 +58,10 @@ class DAGExecutionError(Exception):
     cancelled_jobs:
         Set of job_ids that were pending when the failure occurred and
         were not executed.
+    plan_dir:
+        Path to the materialized plan directory, if known.
+    outputs_path:
+        Path where job outputs (and .failed sentinels) are written, if known.
     """
 
     def __init__(
@@ -68,12 +70,45 @@ class DAGExecutionError(Exception):
         cause: BaseException,
         completed_jobs: set[str],
         cancelled_jobs: set[str],
+        *,
+        plan_dir: Path | None = None,
+        outputs_path: Path | None = None,
     ) -> None:
         self.failed_job_id = failed_job_id
         self.cause = cause
         self.completed_jobs = frozenset(completed_jobs)
         self.cancelled_jobs = frozenset(cancelled_jobs)
+        self.plan_dir = plan_dir
+        self.outputs_path = outputs_path
         super().__init__(str(self))
+
+    def _job_traceback(self) -> str | None:
+        """Read the traceback from the .failed sentinel written by the job process."""
+        if self.outputs_path is None:
+            return None
+        sentinel = failed_path(self.outputs_path, self.failed_job_id)
+        if not sentinel.is_file():
+            return None
+        try:
+            data = cast(
+                dict[str, Any],
+                toml.loads(sentinel.read_text(encoding="utf-8")),  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            )
+            tb = data.get("traceback")
+            return str(tb) if isinstance(tb, str) else None
+        except Exception:
+            return None
+
+    def rerun_snippet(self) -> str | None:
+        """Return a Python snippet that re-runs just the failed job, or None."""
+        if self.plan_dir is None:
+            return None
+        from tidyrun.plan import rerun_snippet as _rerun_snippet
+
+        try:
+            return _rerun_snippet(self.plan_dir, self.failed_job_id)
+        except Exception:
+            return None
 
     def __str__(self) -> str:
         lines = [f"DAG job {self.failed_job_id!r} failed: {self.cause}"]
@@ -81,6 +116,16 @@ class DAGExecutionError(Exception):
             lines.append(f"  Completed jobs: {sorted(self.completed_jobs)}")
         if self.cancelled_jobs:
             lines.append(f"  Cancelled jobs: {sorted(self.cancelled_jobs)}")
+        tb = self._job_traceback()
+        if tb:
+            lines.append("")
+            lines.append("Job traceback:")
+            lines.append(tb.rstrip())
+        snippet = self.rerun_snippet()
+        if snippet:
+            lines.append("")
+            lines.append("To re-run this job interactively:")
+            lines.append(snippet)
         return "\n".join(lines)
 
 
@@ -193,7 +238,21 @@ class _ProgressReporter:
         self._emit(f"[{self.phase}] [{self.done}/{self.total}] {status}: {job_id}")
 
 
-def _count_unique_jobs(node: Node, seen: set[int]) -> int:
+def _count_unique_jobs(
+    node: Node,
+    seen: set[int],
+    _keep_alive: list[Any] | None = None,
+) -> int:
+    """Count unique Job leaves under *node*.
+
+    *_keep_alive* accumulates all ephemeral sub-nodes created by
+    ``ParametrizedJob.__getitem__`` so that Python cannot reuse their object
+    IDs while we are still traversing the tree, which would produce false
+    cache hits in *seen*.
+    """
+    if _keep_alive is None:
+        _keep_alive = []
+
     node_id = id(node)
     if node_id in seen:
         return 0
@@ -203,9 +262,15 @@ def _count_unique_jobs(node: Node, seen: set[int]) -> int:
         return 1
 
     if isinstance(node, ParametrizedJob):
-        return sum(_count_unique_jobs(node[key], seen) for key in node)
+        # Create all children first and stash them in _keep_alive so they
+        # remain alive (and keep their IDs stable) for the entire tree walk.
+        children = [node[key] for key in node]
+        _keep_alive.extend(children)
+        return sum(_count_unique_jobs(child, seen, _keep_alive) for child in children)
 
-    return sum(_count_unique_jobs(subnode, seen) for subnode in node.values())
+    return sum(
+        _count_unique_jobs(subnode, seen, _keep_alive) for subnode in node.values()
+    )
 
 
 def _resolve_plan_and_output_paths(
@@ -289,7 +354,7 @@ def _run_compiled_job(plan_paths: PlanPaths, job_id: str) -> None:
 
     plan_dir = plan_paths.definitions.parent
     definition = load_job_definition(plan_dir, job_id)
-    inputs = load_job_inputs(definition, plan_dir)
+    inputs = load_job_inputs(definition, plan_dir, outputs_path=plan_paths.outputs)
     func = load_callable(definition)
 
     running = running_path(plan_paths.outputs, job_id)
@@ -640,12 +705,17 @@ class DAG(Mapping[Key, Node]):
             array_group: str | None,
             group_parameter_names: tuple[str, ...] | None,
         ) -> dict[str, Any]:
-            if isinstance(value, (Job, ParametrizedJob, DAG)):
+            if isinstance(value, (Job, DAG)):
+                # Split the owner_job_id by "/" so that path segments containing
+                # slashes (e.g. "pairs/m1/train") don't end up as a single key in
+                # the hint.  A slashed single-element hint would be rejected by
+                # encode_key, triggering the synthetic __job_N fallback.
+                owner_parts = tuple(p for p in owner_job_id.split("/") if p)
                 return {
                     "kind": "dependency",
                     "ref": _compile_node(
                         value,
-                        (owner_job_id, "arg", arg_name),
+                        (*owner_parts, "arg", arg_name),
                         array_group=None,
                         group_parameter_names=None,
                     ),
@@ -883,7 +953,7 @@ class DAG(Mapping[Key, Node]):
         progress_callback:
             Optional callback used for progress messages.
         """
-        from tidyrun.serialization.api import deserialize, serialize
+        from tidyrun.serialization.api import deserialize
 
         if executor is not None and max_workers is not None:
             raise ValueError("Pass either executor or max_workers, not both")
@@ -893,7 +963,14 @@ class DAG(Mapping[Key, Node]):
             dag_path=dag_path,
             output_path=output_path,
         )
-        plan_paths = PlanPaths.from_root(plan_dir)
+        # Jobs write their outputs directly to resolved_output so that no
+        # post-processing or re-serialization is required after execution.
+        plan_paths = PlanPaths(
+            definitions=plan_dir / "definitions",
+            inputs=plan_dir / "inputs",
+            outputs=resolved_output,
+        )
+        resolved_output.mkdir(parents=True, exist_ok=True)
         runner_string = plan_paths.to_runner_string()
 
         # Discover jobs by scanning definitions/.
@@ -1078,6 +1155,8 @@ class DAG(Mapping[Key, Node]):
                             cause=exc,
                             completed_jobs=completed,
                             cancelled_jobs=remaining - completed,
+                            plan_dir=plan_dir,
+                            outputs_path=plan_paths.outputs,
                         ) from exc
                     completed.add(job_id)
                     reporter.step(job_id)
@@ -1225,25 +1304,17 @@ class DAG(Mapping[Key, Node]):
                         cause=failed_exc,
                         completed_jobs=completed,
                         cancelled_jobs=cancelled,
+                        plan_dir=plan_dir,
+                        outputs_path=plan_paths.outputs,
                     )
                 _submit_ready()
 
             if len(completed) != len(dependencies):
                 raise ValueError("Cycle detected in materialized job dependencies")
 
-        resolved: dict[Key, Any] = {}
-        for encoded_key, ref in top_level.items():
-            resolved[decode_manifest_key(encoded_key)] = resolve_ref_from_outputs(
-                plan_paths.outputs, cast(Mapping[str, Any], ref)
-            )
-
-        if skip_completed and resolved_output.exists():
-            if resolved_output.is_dir():
-                shutil.rmtree(resolved_output)
-            else:
-                resolved_output.unlink()
-        resolved_output.parent.mkdir(parents=True, exist_ok=True)
-        serialize(resolved, resolved_output)
+        # Jobs have written their outputs directly to resolved_output/{job_id}.
+        # LazyDict can navigate the resulting directory tree without any further
+        # serialization work.
         reporter.info("done")
         return deserialize(resolved_output)
 
@@ -1397,11 +1468,12 @@ class DAG(Mapping[Key, Node]):
         self,
         dag_path: Any,
         job_ids: list[str] | None = None,
+        output_path: Any | None = None,
     ) -> None:
         """Delete serialized outputs for jobs in a materialized plan.
 
         Use this to discard stale or incorrect outputs before resubmitting a
-        DAG.  When *job_ids* is ``None`` the entire ``outputs/`` directory is
+        DAG.  When *job_ids* is ``None`` the entire outputs directory is
         removed.  Otherwise only the specified jobs' output files are deleted.
 
         Parameters
@@ -1412,13 +1484,21 @@ class DAG(Mapping[Key, Node]):
         job_ids:
             Optional list of job IDs whose outputs should be cleared.
             When ``None``, all outputs are removed.
+        output_path:
+            Location of job outputs.  Defaults to ``dag_path/outputs`` for
+            backward compatibility, but should be the same value that was
+            passed to :meth:`execute_materialized` when a custom path was used.
         """
         import shutil
 
         from tidyrun.serialization.metadata import metadata_path, read_metadata
 
         plan_dir = to_path(dag_path)
-        outputs_dir = PlanPaths.from_root(plan_dir).outputs
+        outputs_dir = (
+            to_path(output_path)
+            if output_path is not None
+            else PlanPaths.from_root(plan_dir).outputs
+        )
 
         if job_ids is None:
             if outputs_dir.exists():
@@ -1445,6 +1525,103 @@ class DAG(Mapping[Key, Node]):
                 else:
                     payload.unlink()
             meta.unlink()
+
+
+class ParametrizedJob(DAG):
+    """A deferred computation indexed by parameter keys.
+
+    Parameters are declared through ``parameter_names`` and populated through
+    ``parameter_values``. Accessing a key fixes the first parameter and returns
+    either a :class:`Job` (when one parameter remains) or another
+    :class:`ParametrizedJob` (when more parameters remain).
+
+    Being a subclass of :class:`DAG`, a ``ParametrizedJob`` inherits all
+    execution methods (``materialize``, ``execute_materialized``,
+    ``evaluate_in_subprocesses``, ``evaluate``, ``clear_outputs``) with
+    identical semantics: the top-level keys are the first-level parameter
+    values and no extra wrapping level is added.
+    """
+
+    func: Callable[..., Any]
+    parameter_names: tuple[str, ...]
+    parameter_values: tuple[tuple[Key, ...], ...]
+    kwargs: Mapping[str, Any]
+
+    def __init__(
+        self,
+        func: Callable[..., Any],
+        parameter_names: list[str] | tuple[str, ...],
+        parameter_values: list[tuple[Key, ...]] | tuple[tuple[Key, ...], ...],
+        kwargs: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.func = func
+        self.parameter_names = tuple(parameter_names)
+        self.parameter_values = tuple(tuple(v) for v in parameter_values)
+        self.kwargs = {} if kwargs is None else kwargs
+        self._validate()
+
+    @property  # type: ignore[override]
+    def _nodes(self) -> dict[Key, Node]:  # pyright: ignore[reportIncompatibleVariableOverride]
+        return {k: self[k] for k in self}
+
+    def __setitem__(self, key: Key, value: Node) -> None:
+        raise TypeError(f"{type(self).__name__!r} does not support item assignment")
+
+    def __getitem__(self, key: Key) -> Job | ParametrizedJob:
+        matching = [values for values in self.parameter_values if values[0] == key]
+        if not matching:
+            raise KeyError(key)
+
+        parameter_name = self.parameter_names[0]
+        bound_kwargs = dict(self.kwargs)
+        bound_kwargs[parameter_name] = key
+
+        if len(self.parameter_names) == 1:
+            return Job(func=self.func, kwargs=bound_kwargs)
+
+        remaining_names = self.parameter_names[1:]
+        remaining_values = [values[1:] for values in matching]
+        return ParametrizedJob(
+            func=self.func,
+            parameter_names=remaining_names,
+            parameter_values=remaining_values,
+            kwargs=bound_kwargs,
+        )
+
+    def __iter__(self) -> Iterator[Key]:
+        seen: set[Key] = set()
+        for values in self.parameter_values:
+            first = values[0]
+            if first in seen:
+                continue
+            seen.add(first)
+            yield first
+
+    def __len__(self) -> int:
+        return len(set(values[0] for values in self.parameter_values))
+
+    def _validate(self) -> None:
+        if not self.parameter_names:
+            raise ValueError("parameter_names must not be empty")
+        if len(set(self.parameter_names)) != len(self.parameter_names):
+            raise ValueError("parameter_names must be unique")
+        expected_arity = len(self.parameter_names)
+        seen: set[tuple[Key, ...]] = set()
+        for values in self.parameter_values:
+            if len(values) != expected_arity:
+                raise ValueError(
+                    f"Each parameter tuple must have length {expected_arity}"
+                )
+            for key in values:
+                encode_key(key)
+            if values in seen:
+                raise ValueError("parameter_values must not contain duplicates")
+            seen.add(values)
+        validate_callable_bindings(
+            func=self.func,
+            kwargs=self.kwargs,
+            parameter_names=self.parameter_names,
+        )
 
 
 def execute_plan(
@@ -1597,6 +1774,8 @@ def execute_plan(
                         cause=exc,
                         completed_jobs=completed,
                         cancelled_jobs=remaining - completed,
+                        plan_dir=plan_path,
+                        outputs_path=plan_paths.outputs,
                     ) from exc
                 completed.add(job_id)
                 reporter.step(job_id)
@@ -1645,6 +1824,8 @@ def execute_plan(
                             cause=exc,
                             completed_jobs=completed,
                             cancelled_jobs=set(futures.values()) | set(ready),
+                            plan_dir=plan_path,
+                            outputs_path=plan_paths.outputs,
                         ) from exc
                     completed.add(jid)
                     reporter.step(jid)
