@@ -682,7 +682,10 @@ def test_get_job_states(tmp_path: Path) -> None:
 def test_flat_dag_writes_root_metadata(tmp_path: Path) -> None:
     """After executing a flat DAG, outputs.tidyrun exists with dict-folder encoding."""
     import toml
-    from tidyrun.serialization.metadata import checksum_for_named_children, read_metadata
+    from tidyrun.serialization.metadata import (
+        checksum_for_named_children,
+        read_metadata,
+    )
 
     dag = DAG(
         {
@@ -695,7 +698,9 @@ def test_flat_dag_writes_root_metadata(tmp_path: Path) -> None:
     dag.execute_materialized(dag_path=plan_dir, output_path=outputs_path)
 
     root_meta_file = outputs_path.with_suffix(".tidyrun")
-    assert root_meta_file.exists(), "outputs.tidyrun should be written after DAG execution"
+    assert root_meta_file.exists(), (
+        "outputs.tidyrun should be written after DAG execution"
+    )
 
     root_meta = toml.loads(root_meta_file.read_text())
     assert root_meta["encoding"] == "dict-folder"
@@ -703,6 +708,7 @@ def test_flat_dag_writes_root_metadata(tmp_path: Path) -> None:
 
     # Checksum must match what checksum_for_named_children would produce
     from tidyrun.keys import encode_key
+
     children = []
     for key in ["a", "b"]:
         encoded = encode_key(key)
@@ -749,7 +755,7 @@ def test_nested_dag_writes_group_and_root_metadata(tmp_path: Path) -> None:
 
 def test_dag_metadata_consistent_with_serialize(tmp_path: Path) -> None:
     """The checksum in outputs.tidyrun matches serialize(equivalent_dict)."""
-    from tidyrun import deserialize, serialize
+    from tidyrun import serialize
     from tidyrun.serialization.metadata import read_metadata
 
     dag = DAG(
@@ -795,4 +801,6 @@ def test_dag_skip_completed_preserves_metadata(tmp_path: Path) -> None:
     )
 
     root_meta_after = toml.loads(outputs_path.with_suffix(".tidyrun").read_text())
-    assert root_meta_before["checksum"]["digest"] == root_meta_after["checksum"]["digest"]
+    assert (
+        root_meta_before["checksum"]["digest"] == root_meta_after["checksum"]["digest"]
+    )
