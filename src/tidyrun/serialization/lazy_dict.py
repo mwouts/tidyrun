@@ -62,14 +62,26 @@ class LazyDict(Mapping[Key, Any]):
 
         serialized_path = cast(Any, self.__serialized_path__)
         entries: list[str] = []
+        metadata_named: set[str] = set()
+
         metadata_files = sorted(
             serialized_path.glob(f"*{TIDYRUN_METADATA_EXTENSION}"), key=lambda p: p.name
         )
+        for metadata_file in metadata_files:
+            encoded_name = metadata_file.name[: -len(TIDYRUN_METADATA_EXTENSION)]
+            entries.append(encoded_name)
+            metadata_named.add(encoded_name)
+
         if metadata_files:
-            for metadata_file in metadata_files:
-                encoded_name = metadata_file.name[: -len(TIDYRUN_METADATA_EXTENSION)]
-                entries.append(encoded_name)
+            # When metadata files are present also include bare subdirectories
+            # not already covered by a metadata sidecar.  This handles output
+            # trees where parametrised-job group directories sit alongside
+            # individual job outputs that do have metadata sidecars.
+            for entry in sorted(serialized_path.iterdir(), key=lambda p: p.name):
+                if entry.is_dir() and entry.name not in metadata_named:
+                    entries.append(entry.name)
         else:
+            # No metadata — fall back to scanning all payload candidates.
             for entry in sorted(serialized_path.iterdir(), key=lambda p: p.name):
                 encoded_name = _decoded_name_from_payload_name(entry.name)
                 if encoded_name is None:

@@ -120,7 +120,12 @@ class PlanPaths:
 
 
 def _find_definition_file(definitions_dir: Path, job_id: str) -> Path | None:
-    """Find the definition file for a job, trying direct file then shorter prefixes."""
+    """Find the definition file for a job, trying direct file then shorter prefixes.
+
+    As a final fallback, checks for the ROOT_ARRAY_GROUP definition file used when
+    a :class:`~tidyrun.ParametrizedJob` is compiled standalone via its own
+    :meth:`~tidyrun.ParametrizedJob.materialize`.
+    """
     candidate = job_definition_file(definitions_dir, job_id)
     if candidate.is_file():
         return candidate
@@ -279,6 +284,7 @@ def _resolve_arg(
     spec: Mapping[str, Any],
     *,
     requested_job_id: str | None = None,
+    outputs_path: Path | None = None,
 ) -> Any:
     from tidyrun.serialization.api import deserialize
 
@@ -335,19 +341,38 @@ def _resolve_arg(
         ref = spec.get("ref")
         if not isinstance(ref, dict):
             raise ValueError(f"Invalid dependency arg spec: {spec!r}")
-        outputs_path = plan_dir / "outputs"
-        return resolve_ref_from_outputs(outputs_path, cast(Mapping[str, Any], ref))
+        dep_outputs = outputs_path if outputs_path is not None else plan_dir / "outputs"
+        return resolve_ref_from_outputs(dep_outputs, cast(Mapping[str, Any], ref))
 
     raise ValueError(f"Unknown arg kind: {kind!r}")
 
 
-def load_job_inputs(job_definition: Mapping[str, Any], dag_path: Any) -> dict[str, Any]:
-    """Load all job inputs by deserializing materialized argument specs."""
+def load_job_inputs(
+    job_definition: Mapping[str, Any],
+    dag_path: Any,
+    outputs_path: Any | None = None,
+) -> dict[str, Any]:
+    """Load all job inputs by deserializing materialized argument specs.
+
+    Parameters
+    ----------
+    job_definition:
+        Loaded job definition (from :func:`load_job_definition`).
+    dag_path:
+        Root of the materialised plan (contains ``definitions/``).
+    outputs_path:
+        Directory where job outputs are stored.  Defaults to
+        ``dag_path/outputs``; pass the same value that was supplied to
+        :meth:`~tidyrun.DAG.execute_materialized` when a custom path was used.
+    """
     kwargs_table = job_definition.get("args")
     if not isinstance(kwargs_table, dict):
         raise ValueError("Invalid args section in job definition")
     typed_kwargs_table = cast(dict[str, Any], kwargs_table)
     plan_dir = to_path(dag_path)
+    resolved_out = (
+        to_path(outputs_path) if outputs_path is not None else plan_dir / "outputs"
+    )
     requested_job_id = job_definition.get("_requested_job_id")
     if requested_job_id is not None and not isinstance(requested_job_id, str):
         raise ValueError("Invalid _requested_job_id metadata in job definition")
@@ -367,6 +392,7 @@ def load_job_inputs(job_definition: Mapping[str, Any], dag_path: Any) -> dict[st
                 plan_dir,
                 spec,
                 requested_job_id=requested_job_id,
+                outputs_path=resolved_out,
             )
     return resolved_inputs
 
@@ -424,14 +450,11 @@ def enumerate_job_ids_from_definitions(
             if per_param_values:
                 n_instances = len(per_param_values[0])
                 for i in range(n_instances):
-                    job_id = (
-                        array_group
-                        + "/"
-                        + "/".join(
-                            encode_key(per_param_values[p][i])
-                            for p in range(len(parameter_names))
-                        )
+                    encoded_values = "/".join(
+                        encode_key(per_param_values[p][i])
+                        for p in range(len(parameter_names))
                     )
+                    job_id = array_group + "/" + encoded_values
                     result[job_id] = array_group
             else:
                 result[array_group] = array_group
@@ -444,6 +467,7 @@ def enumerate_job_ids_from_definitions(
 
 def get_job_states(
     dag_path: Any,
+    output_path: Any | None = None,
 ) -> dict[str, Literal["pending", "running", "failed", "succeeded"]]:
     """Return the execution state of every job in a materialized plan.
 
@@ -452,9 +476,20 @@ def get_job_states(
     - ``"failed"`` — ``.failed`` sentinel file exists.
     - ``"running"`` — ``.running`` sentinel file exists.
     - ``"pending"`` — none of the above.
+
+    Parameters
+    ----------
+    dag_path:
+        Root of the materialised plan (contains ``definitions/``).
+    output_path:
+        Location where job outputs are written.  Defaults to
+        ``dag_path/outputs`` for backward compatibility, but should match the
+        value passed to :meth:`~tidyrun.DAG.execute_materialized`.
     """
     plan_dir = to_path(dag_path)
-    outputs_path = plan_dir / "outputs"
+    outputs_path = (
+        to_path(output_path) if output_path is not None else plan_dir / "outputs"
+    )
     definitions_dir = plan_dir / "definitions"
 
     job_ids = enumerate_job_ids_from_definitions(definitions_dir)

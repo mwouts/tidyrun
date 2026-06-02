@@ -10,8 +10,9 @@ from typing import cast
 import pytest
 import toml
 
-from tidyrun.dag import DAG, load_job_definition
-from tidyrun.job import Job, ParametrizedJob
+from tidyrun import execute_plan, get_job_states
+from tidyrun.dag import DAG, ParametrizedJob, load_job_definition
+from tidyrun.job import Job, validate_callable_bindings
 from tidyrun.keys import encode_key
 from tidyrun.serialization.metadata import metadata_exists
 
@@ -573,3 +574,56 @@ def test_parametrized_job_plan_has_recursive_structure_and_o1_files(
     grid_result = result.to_dict()["grid"]
     for i in range(n_params):
         assert grid_result[f"param_{i}"] == f"param_{i}-constant_value"
+
+
+def test_nested_dag(tmp_path: Path) -> None:
+    """A DAG stored as a node inside another DAG materializes and executes correctly."""
+    inner = DAG()
+    inner["x"] = Job(func=_join_with_sep, kwargs={"left": "a", "right": "b"})
+    inner["y"] = Job(func=_join_with_sep, kwargs={"left": "c", "right": "d"})
+
+    outer = DAG()
+    outer["group"] = inner
+
+    result = outer.evaluate(tmp_path)
+    assert result.to_dict() == {"group": {"x": "a/b", "y": "c/d"}}
+
+
+def test_validate_callable_rejects_positional_only_params() -> None:
+    def _pos_only(a: int, b: int, /, c: int = 0) -> int:
+        return a + b + c
+
+    with pytest.raises(ValueError, match="positional-only"):
+        validate_callable_bindings(
+            func=_pos_only,
+            kwargs={"a": 1, "b": 2},
+            parameter_names=(),
+        )
+
+
+def test_execute_plan(tmp_path: Path) -> None:
+    dag = DAG()
+    dag["a"] = Job(func=_join_with_sep, kwargs={"left": "hello", "right": "world"})
+    dag["b"] = Job(func=_join_with_sep, kwargs={"left": "foo", "right": "bar"})
+
+    plan_dir = dag.materialize(tmp_path / "plan")
+    execute_plan(plan_dir)
+
+    from tidyrun import deserialize
+
+    result = deserialize(tmp_path / "plan" / "outputs")
+    assert result.to_dict() == {"a": "hello/world", "b": "foo/bar"}
+
+
+def test_get_job_states(tmp_path: Path) -> None:
+    dag = DAG()
+    dag["a"] = Job(func=_join_with_sep, kwargs={"left": "x", "right": "y"})
+    dag["b"] = Job(func=_join_with_sep, kwargs={"left": "p", "right": "q"})
+
+    plan_dir = dag.materialize(tmp_path / "plan")
+
+    assert get_job_states(plan_dir) == {"a": "pending", "b": "pending"}
+
+    dag.execute_materialized(dag_path=plan_dir, output_path=plan_dir / "outputs")
+
+    assert get_job_states(plan_dir) == {"a": "succeeded", "b": "succeeded"}

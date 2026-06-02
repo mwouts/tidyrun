@@ -2,6 +2,52 @@
 
 All notable changes to TidyRun are documented in this file.
 
+## [0.0.6] — (2026-06-02)
+
+### Added
+
+- `ParametrizedJob` is now a subclass of `DAG`, eliminating delegation
+  boilerplate and adding the previously missing `evaluate_in_subprocesses`
+  and `clear_outputs` methods. All five execution methods (`materialize`,
+  `execute_materialized`, `evaluate_in_subprocesses`, `evaluate`,
+  `clear_outputs`) are now inherited directly from `DAG`.
+- `DAGExecutionError.plan_dir` and `DAGExecutionError.outputs_path`: new attributes
+  that carry the materialised plan directory and its outputs path so that callers
+  can locate the `.failed` sentinel or construct a rerun snippet.
+- `DAGExecutionError.rerun_snippet()`: returns a copy-pasteable Python snippet that
+  re-runs just the failed job from the materialised plan.
+- `DAGExecutionError.__str__` now appends the job's full traceback (read from the
+  `.failed` TOML sentinel) and the rerun snippet, making it straightforward to
+  debug a failed SLURM or AWS Batch job.
+
+### Fixed
+
+- Progress bar total was over-reported for multi-level parametrised jobs (e.g.
+  `200/3` instead of `200/200`). Root cause: Python reuses object IDs for
+  short-lived `ParametrizedJob` sub-nodes created by `__getitem__`, causing false
+  hits in the deduplication set used by `_count_unique_jobs`. Fixed by accumulating
+  all ephemeral child references in a single list so they remain alive for the
+  entire counting pass.
+- `execute_materialized` was slow for large parametrised runs because it eagerly
+  loaded every job output into memory and re-serialised it to `output_path`.
+  Each job now writes its output directly to `output_path/{job_id}` so the
+  ``output_path`` directory IS the final result with no post-processing step.
+  ``load_job_inputs`` also gained an ``outputs_path`` parameter so dependency
+  resolution always finds the right location.
+- Dependency job IDs could fall back to synthetic `__job_N` counters when a
+  shared `Job` was used as an argument to a parametrised job instance whose
+  `job_id` contained path separators (e.g. `"pairs/m1/train"`). Fixed by splitting
+  the owner job id on `"/"` before building the path hint in `_compile_operand`.
+- `SlurmExecutor` files in `shared_dir` (task pickle, result, error, stdout) now
+  use the job id as a prefix (e.g. `pairs__m1__train.task.pickle`) instead of a
+  random UUID hex string, making it much easier to correlate log files with jobs.
+  For array submissions the prefix is derived from the common group name of the
+  submitted job ids.
+
+### Changed
+
+- We have moved the executors module under `executors`
+
 ## [0.0.5] — (2026-05-31)
 
 ### Added

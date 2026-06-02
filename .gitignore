@@ -28,3 +28,6 @@ site/
 
 # Claude
 .claude/
+
+# Coverage
+.coverage

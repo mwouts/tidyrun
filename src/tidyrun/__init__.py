@@ -2,6 +2,7 @@ from importlib.metadata import version
 from .dag import (
     DAG,
     DAGExecutionError,
+    ParametrizedJob,
     batch_entrypoint,
     execute_plan,
     run_materialized_job,
@@ -14,10 +15,10 @@ from .plan import (
     load_job_inputs,
     rerun_snippet,
 )
-from .aws_batch_executor import AwsBatchExecutor
-from .job import Job, ParametrizedJob
+from .executors import AwsBatchExecutor
+from .job import Job
 from .serialization import LazyDict, deserialize, serialize
-from .slurm_executor import SlurmExecutor
+from .executors import SlurmExecutor
 
 __version__ = version("tidyrun")
 
