@@ -27,8 +27,8 @@ All notable changes to TidyRun are documented in this file.
 ### Fixed
 
 - Fixed SLURM array jobs always reporting failure even when job outputs were written successfully.
-- Removed unnecessary duplicate jobs that were created in a DAG when a
-  parametrized job had dependencies.
+- Removed unnecessary duplicate jobs that were created in a DAG when a parametrized job had dependencies
+- Fixed failing jobs when a parametrized job depends on another parametrized job
 
 ## [0.0.6] — (2026-06-02)
 

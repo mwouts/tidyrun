@@ -575,6 +575,17 @@ def _literal_path_str(abs_path: Path, plan_paths: PlanPaths) -> str:
         return str(abs_path)
 
 
+def _substitute_dependency_placeholders(
+    job_id: str,
+    parameter_values: Mapping[str, Any],
+) -> str:
+    """Substitute ``{param}`` tokens in a dependency job_id string."""
+    resolved = job_id
+    for name, value in parameter_values.items():
+        resolved = resolved.replace(f"{{{name}}}", encode_key(value))
+    return normalize_job_id(resolved)
+
+
 def _patch_parameter_values(
     definitions_dir: Path,
     parameter_value_lists: dict[tuple[str, str], list[Any]],
@@ -781,20 +792,46 @@ class DAG(Mapping[Key, Node]):
             group_parameter_names: tuple[str, ...] | None,
         ) -> dict[str, Any]:
             if isinstance(value, (Job, DAG)):
+                if (
+                    array_group is not None
+                    and group_parameter_names is not None
+                    and isinstance(value, Job)
+                ):
+                    pjob_parent = getattr(value, "_pjob_parent", None)
+                    pjob_key = getattr(value, "_pjob_key", None)
+                    if isinstance(pjob_key, str) and pjob_key in group_parameter_names:
+                        parent_path = _node_dag_path(pjob_parent)
+                        if parent_path is not None:
+                            return {
+                                "kind": "dependency",
+                                "ref": {
+                                    "kind": "job",
+                                    "job_id": f"{parent_path}/{{{pjob_key}}}",
+                                },
+                            }
+
                 # Split the owner_job_id by "/" so that path segments containing
                 # slashes (e.g. "pairs/m1/train") don't end up as a single key in
                 # the hint.  A slashed single-element hint would be rejected by
                 # encode_key, triggering the synthetic __job_N fallback.
                 owner_parts = tuple(p for p in owner_job_id.split("/") if p)
-                return {
-                    "kind": "dependency",
-                    "ref": _compile_node(
-                        value,
-                        (*owner_parts, "arg", arg_name),
-                        array_group=None,
-                        group_parameter_names=None,
-                    ),
-                }
+                ref = _compile_node(
+                    value,
+                    (*owner_parts, "arg", arg_name),
+                    array_group=None,
+                    group_parameter_names=None,
+                )
+
+                # When a ParametrizedJob is used as dep inside a parametrized
+                # context, record the owner's array group so the runtime can
+                # select the per-instance sub-entry instead of the whole group.
+                if isinstance(value, ParametrizedJob) and array_group is not None:
+                    return {
+                        "kind": "dependency",
+                        "ref": ref,
+                        "align_group": array_group,
+                    }
+                return {"kind": "dependency", "ref": ref}
 
             if array_group is not None and group_parameter_names is not None:
                 shared_key = (array_group, arg_name)
@@ -947,9 +984,16 @@ class DAG(Mapping[Key, Node]):
 
             if isinstance(node, ParametrizedJob):
                 entries: dict[str, Any] = {}
+                # If this ParametrizedJob is registered at the DAG top level,
+                # use its canonical path rather than the (potentially wrong)
+                # path_hint, which can be a dependency context path like
+                # "consume/1/arg/dep" instead of "produce".
+                canonical_path = pjob_paths.get(node_id)
                 effective_array_group = (
                     array_group
                     if array_group is not None
+                    else canonical_path
+                    if canonical_path is not None
                     else _job_id_from_path_hint(path_hint)
                 )
                 effective_group_parameter_names = (
@@ -1125,6 +1169,10 @@ class DAG(Mapping[Key, Node]):
                 if per_param_values:
                     n_instances = len(per_param_values[0])
                     for i in range(n_instances):
+                        parameter_value_by_name = {
+                            parameter_names[p]: per_param_values[p][i]
+                            for p in range(len(parameter_names))
+                        }
                         job_id = (
                             array_group
                             + "/"
@@ -1133,7 +1181,13 @@ class DAG(Mapping[Key, Node]):
                                 for p in range(len(parameter_names))
                             )
                         )
-                        dependencies[job_id] = set(dep_list)
+                        dependencies[job_id] = {
+                            _substitute_dependency_placeholders(
+                                dep,
+                                parameter_value_by_name,
+                            )
+                            for dep in dep_list
+                        }
                         array_group_by_job_id[job_id] = array_group
                         array_groups.setdefault(array_group, set()).add(job_id)
                 else:
@@ -1728,6 +1782,22 @@ class ParametrizedJob(DAG):
         raise TypeError(f"{type(self).__name__!r} does not support item assignment")
 
     def __getitem__(self, key: Key) -> Job | ParametrizedJob:
+        # When a string that matches a parameter name is used as the key (and
+        # is not itself one of the actual parameter values), return a sentinel
+        # Job that the compiler recognises as a "same-parameter selector" and
+        # translates into a per-instance dep template like "produce/{x}".
+        if (
+            isinstance(key, str)
+            and key in self.parameter_names
+            and all(values[0] != key for values in self.parameter_values)
+        ):
+            sentinel: Job = object.__new__(Job)
+            sentinel.__dict__["func"] = self.func
+            sentinel.__dict__["kwargs"] = self.kwargs
+            sentinel._pjob_parent = self  # type: ignore[attr-defined]
+            sentinel._pjob_key = key  # type: ignore[attr-defined]
+            return sentinel
+
         matching = [values for values in self.parameter_values if values[0] == key]
         if not matching:
             raise KeyError(key)
@@ -1868,6 +1938,10 @@ def execute_plan(
             if per_param_values:
                 n_instances = len(per_param_values[0])
                 for i in range(n_instances):
+                    parameter_value_by_name = {
+                        parameter_names[p]: per_param_values[p][i]
+                        for p in range(len(parameter_names))
+                    }
                     job_id = (
                         array_group
                         + "/"
@@ -1876,7 +1950,12 @@ def execute_plan(
                             for p in range(len(parameter_names))
                         )
                     )
-                    dependencies[job_id] = set(dep_list)
+                    dependencies[job_id] = {
+                        _substitute_dependency_placeholders(
+                            dep, parameter_value_by_name
+                        )
+                        for dep in dep_list
+                    }
                     array_group_by_job_id[job_id] = array_group
                     array_groups.setdefault(array_group, set()).add(job_id)
             else:

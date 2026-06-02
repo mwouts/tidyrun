@@ -175,6 +175,19 @@ def load_job_definition(dag_path: Any, job_id: str) -> dict[str, Any]:
         rel = definition_file.relative_to(definitions_dir).with_suffix("")
         definition["array_group"] = rel.as_posix()
 
+    placeholder_values: dict[str, str] = {}
+    if "parameter_names" in definition:
+        for parameter_name in cast(list[str], definition.get("parameter_names", [])):
+            placeholder_values[f"{{{parameter_name}}}"] = encode_key(
+                _resolve_parameter_value(parameter_name, normalized_job_id, definition)
+            )
+
+    def _substitute_dependency_placeholders(value: str) -> str:
+        resolved = value
+        for token, replacement in placeholder_values.items():
+            resolved = resolved.replace(token, replacement)
+        return resolved
+
     def _hydrate_requested_job_id(value: Any) -> Any:
         if isinstance(value, dict):
             value_dict = cast(dict[str, Any], value)
@@ -184,6 +197,9 @@ def load_job_definition(dag_path: Any, job_id: str) -> dict[str, Any]:
             if hydrated.get("job_id_from_request") is True:
                 hydrated.pop("job_id_from_request", None)
                 hydrated["job_id"] = normalized_job_id
+            raw_job_id = hydrated.get("job_id")
+            if isinstance(raw_job_id, str):
+                hydrated["job_id"] = _substitute_dependency_placeholders(raw_job_id)
             return hydrated
         if isinstance(value, list):
             return [_hydrate_requested_job_id(item) for item in cast(list[Any], value)]
@@ -252,6 +268,31 @@ def _resolve_parameter_value(
             f"job_id {job_id!r} has too few path segments for parameter index {param_idx}"
         )
     return decode_key(key_segments[param_idx])
+
+
+def _substitute_placeholders_in_spec(spec: Any, param_bindings: dict[str, Any]) -> Any:
+    """Replace ``{param_name}`` tokens in arg specs using current parameter values.
+
+    Walks nested dicts and lists so that job_id strings like ``"produce/{x}"``
+    are expanded to concrete ids like ``"produce/1"`` before the spec is
+    passed to :func:`_resolve_arg`.
+    """
+    if isinstance(spec, str):
+        result = spec
+        for name, value in param_bindings.items():
+            result = result.replace(f"{{{name}}}", encode_key(value))
+        return result
+    if isinstance(spec, dict):
+        return {
+            k: _substitute_placeholders_in_spec(v, param_bindings)
+            for k, v in cast(dict[str, Any], spec).items()
+        }
+    if isinstance(spec, list):
+        return [
+            _substitute_placeholders_in_spec(item, param_bindings)
+            for item in cast(list[Any], spec)
+        ]
+    return spec
 
 
 def resolve_ref_from_outputs(outputs_path: Path, ref: Mapping[str, Any]) -> Any:
@@ -342,6 +383,41 @@ def _resolve_arg(
         if not isinstance(ref, dict):
             raise ValueError(f"Invalid dependency arg spec: {spec!r}")
         dep_outputs = outputs_path if outputs_path is not None else plan_dir / "outputs"
+
+        # When the dep was compiled from a ParametrizedJob inside a parametrized
+        # context, align_group is set.  In that case, select only the sub-entry
+        # that matches the current instance's key segment(s) rather than loading
+        # the entire group.
+        align_group = spec.get("align_group")
+        if (
+            align_group
+            and isinstance(align_group, str)
+            and requested_job_id is not None
+        ):
+            prefix = align_group + "/"
+            if not requested_job_id.startswith(prefix):
+                raise ValueError(
+                    f"job_id {requested_job_id!r} does not start with "
+                    f"align_group prefix {prefix!r}"
+                )
+            key_suffix = requested_job_id[len(prefix) :]
+            key_segments = key_suffix.split("/")
+            sub_ref: Mapping[str, Any] = cast(Mapping[str, Any], ref)
+            for seg in key_segments:
+                if sub_ref.get("kind") != "group":
+                    raise ValueError(
+                        f"Cannot index aligned dependency with segment {seg!r}: "
+                        f"expected a group ref but got {sub_ref.get('kind')!r}"
+                    )
+                entries = cast(dict[str, Any], sub_ref.get("entries", {}))
+                if seg not in entries:
+                    raise ValueError(
+                        f"Aligned dependency has no entry for key {seg!r}. "
+                        f"Available keys: {sorted(entries)}"
+                    )
+                sub_ref = cast(Mapping[str, Any], entries[seg])
+            return resolve_ref_from_outputs(dep_outputs, sub_ref)
+
         return resolve_ref_from_outputs(dep_outputs, cast(Mapping[str, Any], ref))
 
     raise ValueError(f"Unknown arg kind: {kind!r}")
@@ -376,6 +452,17 @@ def load_job_inputs(
     requested_job_id = job_definition.get("_requested_job_id")
     if requested_job_id is not None and not isinstance(requested_job_id, str):
         raise ValueError("Invalid _requested_job_id metadata in job definition")
+    # Build parameter bindings for {param_name} template expansion in dep specs.
+    param_bindings: dict[str, Any] = {}
+    if requested_job_id is not None:
+        for pname in cast(list[str], job_definition.get("parameter_names", [])):
+            try:
+                param_bindings[pname] = _resolve_parameter_value(
+                    pname, requested_job_id, job_definition
+                )
+            except (ValueError, KeyError):
+                pass
+
     resolved_inputs: dict[str, Any] = {}
     for name, raw_spec in typed_kwargs_table.items():
         spec = cast(Mapping[str, Any], raw_spec)
@@ -388,6 +475,11 @@ def load_job_inputs(
                 name, requested_job_id, job_definition
             )
         else:
+            if param_bindings:
+                spec = cast(
+                    Mapping[str, Any],
+                    _substitute_placeholders_in_spec(dict(spec), param_bindings),
+                )
             resolved_inputs[name] = _resolve_arg(
                 plan_dir,
                 spec,
@@ -418,7 +510,7 @@ def rerun_snippet(dag_path: Any, job_id: str) -> str:
             f"plan_dir = Path({plan_str!r})",
             f"job_id = {job_id!r}",
             "definition = load_job_definition(plan_dir, job_id)",
-            "inputs = load_job_inputs(definition, plan_dir)  # resolves parameters for parametrised jobs",
+            "inputs = load_job_inputs(definition, plan_dir)",
             "func = load_callable(definition)",
             "outputs = func(**inputs)",
         ]

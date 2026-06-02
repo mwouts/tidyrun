@@ -665,6 +665,52 @@ def test_parametrized_job_dependency_through_same_parameter_no_extra_job(
         assert result_dict["consume"][v] == v * 2 + v
 
 
+def test_parametrized_job_dependency_by_parameter_name_selector(
+    tmp_path: Path,
+) -> None:
+    """producer["x"] should resolve to producer[current x], not producer/x."""
+
+    def produce(x: int) -> int:
+        return x * 2
+
+    def consume(x: int, dep: int) -> int:
+        return dep + x
+
+    values = [1, 2, 3]
+    producer = ParametrizedJob(
+        func=produce,
+        parameter_names=["x"],
+        parameter_values=[(v,) for v in values],
+    )
+    consumer = ParametrizedJob(
+        func=consume,
+        parameter_names=["x"],
+        parameter_values=[(v,) for v in values],
+        kwargs={"dep": producer["x"]},
+    )
+
+    dag = DAG({"produce": producer, "consume": consumer})
+    plan_dir = dag.materialize(tmp_path / "plan")
+
+    definition_names = {
+        str(f.relative_to(plan_dir / "definitions").with_suffix("").as_posix())
+        for f in (plan_dir / "definitions").rglob("*.tidyrun")
+    }
+    assert definition_names == {"produce", "consume"}
+
+    consume_definition = toml.loads(
+        (plan_dir / "definitions" / "consume.tidyrun").read_text(encoding="utf-8")
+    )
+    assert consume_definition.get("dependencies") == ["produce/{x}"]
+
+    result = dag.evaluate(tmp_path / "run", dag_path=plan_dir)
+    result_dict = result.to_dict()
+    assert set(result_dict["produce"].keys()) == set(values)
+    assert set(result_dict["consume"].keys()) == set(values)
+    for v in values:
+        assert result_dict["consume"][v] == v * 3
+
+
 def test_get_job_states(tmp_path: Path) -> None:
     dag = DAG()
     dag["a"] = Job(func=_join_with_sep, kwargs={"left": "x", "right": "y"})
