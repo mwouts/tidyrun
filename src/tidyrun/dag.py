@@ -510,6 +510,58 @@ def _build_top_level_ref(node: Node, prefix: str) -> dict[str, Any]:
     return {"kind": "group", "entries": entries}
 
 
+def _build_aggregator_deps(
+    node: Node, prefix: str, agg_deps: dict[str, list[str]]
+) -> str:
+    """Walk the DAG tree and register every group node in *agg_deps*.
+
+    Returns the effective job_id for *node*: the leaf job_id for a Job, or
+    *prefix* (which becomes the aggregator id) for any group node.
+    Populates *agg_deps* mapping each group id to its direct children ids.
+    """
+    if isinstance(node, Job):
+        return prefix
+
+    child_ids: list[str] = []
+    for key, subnode in node.items():
+        encoded = _encode_key_checked(key)
+        child_id = _build_aggregator_deps(subnode, f"{prefix}/{encoded}", agg_deps)
+        child_ids.append(child_id)
+
+    agg_deps[prefix] = child_ids
+    return prefix
+
+
+def _run_aggregator_inline(
+    agg_id: str, child_ids: list[str], outputs_path: Path
+) -> None:
+    """Write the dict-folder .tidyrun metadata for a DAG group node.
+
+    Reads the checksum from each child's existing .tidyrun file, combines
+    them with checksum_for_named_children, and writes the result at the
+    path that corresponds to agg_id inside outputs_path.
+    """
+    from tidyrun.serialization.metadata import (
+        checksum_for_named_children,
+        read_metadata,
+        write_metadata,
+    )
+
+    children: list[tuple[str, Any]] = []
+    for child_id in child_ids:
+        encoded_name = child_id.rsplit("/", 1)[-1]
+        meta = read_metadata(job_output_base(outputs_path, child_id))
+        children.append((encoded_name, meta["checksum"]))
+
+    combined = checksum_for_named_children(children)
+    write_metadata(
+        job_output_base(outputs_path, agg_id),
+        encoding="dict-folder",
+        suffix="",
+        checksum=combined,
+    )
+
+
 def _literal_path_str(abs_path: Path, plan_paths: PlanPaths) -> str:
     """Return the path to store in a definition file for a literal input.
 
@@ -609,12 +661,26 @@ class DAG(Mapping[Key, Node]):
     ) -> Path:
         """Write job definitions and literal inputs for process execution.
 
-        *dag_path* may be a plain path (definitions, inputs, and outputs are
-        created as subdirectories of that root) or a :class:`PlanPaths` object
-        that places each component at an independent location.
+        Parameters
+        ----------
+        dag_path :
+            Destination for the materialized plan. May be a plain path
+            (definitions, inputs, and outputs are created as subdirectories)
+            or a :class:`PlanPaths` object that places each component at an
+            independent location. Accepts ``s3://`` URIs when the optional
+            ``boto3`` dependency is installed.
+        prefix :
+            Optional string prepended to all job IDs in this plan.
+        progress :
+            When ``True``, emit progress logs during compilation.
+        progress_callback :
+            Optional callback that receives each progress message string.
 
-        Returns the plan root directory (``dag_path`` as a ``Path``, or the
-        first component's parent for a ``PlanPaths``).
+        Returns
+        -------
+        Path
+            The plan root directory (``dag_path`` as a ``Path``, or the
+            first component's parent for a ``PlanPaths``).
         """
         from tidyrun.serialization.api import serialize
 
@@ -664,9 +730,18 @@ class DAG(Mapping[Key, Node]):
         synthetic_counter = 0
 
         prefix_tuple: tuple[Any, ...] = (prefix,) if prefix else ()
+        # Maps id(pjob) -> canonical DAG path for top-level ParametrizedJob nodes.
+        pjob_paths: dict[int, str] = {}
+        # Maps job_id -> compiled ref for deduplication across different Job objects
+        # that represent the same logical job (e.g. two calls to pjob[key]).
+        compiled_job_ids: dict[str, dict[str, Any]] = {}
         for key, node in self._nodes.items():
             if isinstance(node, Job):
                 preferred_job_ids[id(node)] = _job_id_from_path(
+                    (*prefix_tuple, key)  # type: ignore[arg-type]
+                )
+            elif isinstance(node, ParametrizedJob):
+                pjob_paths[id(node)] = _job_id_from_path(
                     (*prefix_tuple, key)  # type: ignore[arg-type]
                 )
 
@@ -750,6 +825,30 @@ class DAG(Mapping[Key, Node]):
                 "path": _literal_path_str(input_base, plan_paths),
             }
 
+        def _node_dag_path(node: Any) -> str | None:
+            """Walk the _pjob_parent chain to find the canonical DAG job_id.
+
+            When ParametrizedJob.__getitem__ creates a child it tags it with
+            ``_pjob_parent`` (the ParametrizedJob) and ``_pjob_key`` (the lookup
+            key).  Top-level ParametrizedJob nodes are registered in ``pjob_paths``
+            keyed by id().  Following the chain back to one of those entries yields
+            the canonical path (e.g. "produce/1" or "a/m1/train").
+            """
+            direct = pjob_paths.get(id(node))
+            if direct is not None:
+                return direct
+            parent = getattr(node, "_pjob_parent", None)
+            pjob_key = getattr(node, "_pjob_key", None)
+            if parent is None or pjob_key is None:
+                return None
+            parent_path = _node_dag_path(parent)
+            if parent_path is None:
+                return None
+            try:
+                return f"{parent_path}/{_encode_key_checked(pjob_key)}"
+            except ValueError:
+                return None
+
         def _compile_node(
             node: Node,
             path_hint: tuple[Any, ...],
@@ -766,6 +865,16 @@ class DAG(Mapping[Key, Node]):
             if isinstance(node, Job):
                 preferred = preferred_job_ids.get(node_id)
                 if preferred is None:
+                    preferred = _node_dag_path(node)
+                # If the same logical job was already compiled via a different
+                # object (another call to pjob[key] returns a fresh instance),
+                # reuse the existing ref rather than writing a duplicate definition.
+                if preferred is not None:
+                    existing_ref = compiled_job_ids.get(preferred)
+                    if existing_ref is not None:
+                        node_to_ref[node_id] = (node, existing_ref)
+                        return existing_ref
+                if preferred is None:
                     preferred = _job_id_from_path_hint(path_hint)
                 if preferred is None:
                     synthetic_counter += 1
@@ -774,6 +883,7 @@ class DAG(Mapping[Key, Node]):
                 job_id = preferred
                 ref: dict[str, Any] = {"kind": "job", "job_id": job_id}
                 node_to_ref[node_id] = (node, ref)
+                compiled_job_ids[job_id] = ref
 
                 import_spec = _callable_import_spec(node.func)
 
@@ -1065,6 +1175,20 @@ class DAG(Mapping[Key, Node]):
                         progress_callback=progress_callback,
                     )
 
+        # Build synthetic aggregator jobs for every group node in the DAG tree.
+        # These run inline (no subprocess) after their children complete and write
+        # the dict-folder .tidyrun metadata for intermediate and root output folders.
+        aggregator_deps: dict[str, list[str]] = {}
+        root_children: list[str] = []
+        for key, node in self._nodes.items():
+            encoded = _encode_key_checked(key)
+            child_id = _build_aggregator_deps(node, encoded, aggregator_deps)
+            root_children.append(child_id)
+
+        aggregator_job_ids: set[str] = set(aggregator_deps)
+        for agg_id, child_ids in aggregator_deps.items():
+            dependencies[agg_id] = set(child_ids)
+
         resources_by_key: Mapping[Key, Mapping[str, str | int]] = (
             {} if job_resources is None else job_resources
         )
@@ -1087,13 +1211,14 @@ class DAG(Mapping[Key, Node]):
             if key in resources_by_key
         }
 
+        real_job_count = len(dependencies) - len(aggregator_job_ids)
         reporter = _ProgressReporter(
             enabled=progress,
             callback=progress_callback,
             phase="execute",
-            total=len(dependencies),
+            total=real_job_count,
         )
-        reporter.info(f"starting ({len(dependencies)} jobs)")
+        reporter.info(f"starting ({real_job_count} jobs)")
 
         # Guard against accidentally mixing old and new results when reusing a
         # partially executed plan without resume semantics.
@@ -1101,7 +1226,8 @@ class DAG(Mapping[Key, Node]):
             existing_outputs = sorted(
                 job_id
                 for job_id in dependencies
-                if job_output_exists(plan_paths.outputs, job_id)
+                if job_id not in aggregator_job_ids
+                and job_output_exists(plan_paths.outputs, job_id)
             )
             if existing_outputs:
                 raise ValueError(
@@ -1139,7 +1265,13 @@ class DAG(Mapping[Key, Node]):
                 job_id = ready.pop(0)
                 if _should_skip_em(job_id):
                     completed.add(job_id)
-                    reporter.step(job_id, skipped=True)
+                    if job_id not in aggregator_job_ids:
+                        reporter.step(job_id, skipped=True)
+                elif job_id in aggregator_job_ids:
+                    _run_aggregator_inline(
+                        job_id, aggregator_deps[job_id], plan_paths.outputs
+                    )
+                    completed.add(job_id)
                 else:
                     try:
                         job_runner(runner_string, job_id)
@@ -1185,7 +1317,8 @@ class DAG(Mapping[Key, Node]):
                 if job_id in completed:
                     return
                 completed.add(job_id)
-                reporter.step(job_id, skipped=skipped)
+                if job_id not in aggregator_job_ids:
+                    reporter.step(job_id, skipped=skipped)
                 for dependent in dependents.get(job_id, set()):
                     dependencies[dependent].discard(job_id)
                     if not dependencies[dependent]:
@@ -1213,6 +1346,13 @@ class DAG(Mapping[Key, Node]):
                     submitted.add(job_id)
                     if _should_skip_em(job_id):
                         _mark_completed(job_id, skipped=True)
+                        continue
+
+                    if job_id in aggregator_job_ids:
+                        _run_aggregator_inline(
+                            job_id, aggregator_deps[job_id], plan_paths.outputs
+                        )
+                        _mark_completed(job_id)
                         continue
 
                     array_group = array_group_by_job_id.get(job_id)
@@ -1312,9 +1452,29 @@ class DAG(Mapping[Key, Node]):
             if len(completed) != len(dependencies):
                 raise ValueError("Cycle detected in materialized job dependencies")
 
-        # Jobs have written their outputs directly to resolved_output/{job_id}.
-        # LazyDict can navigate the resulting directory tree without any further
-        # serialization work.
+        # Write the root dict-folder .tidyrun for the outputs directory so the
+        # on-disk layout is identical to serialize(dict, outputs_path).
+        from tidyrun.serialization.metadata import (
+            checksum_for_named_children,
+            metadata_exists,
+            read_metadata,
+            write_metadata,
+        )
+
+        if not (skip_completed and metadata_exists(plan_paths.outputs)):
+            root_items: list[tuple[str, Any]] = []
+            for child_id in root_children:
+                encoded_name = child_id.rsplit("/", 1)[-1]
+                meta = read_metadata(job_output_base(plan_paths.outputs, child_id))
+                root_items.append((encoded_name, meta["checksum"]))
+            root_checksum = checksum_for_named_children(root_items)
+            write_metadata(
+                plan_paths.outputs,
+                encoding="dict-folder",
+                suffix="",
+                checksum=root_checksum,
+            )
+
         reporter.info("done")
         return deserialize(resolved_output)
 
@@ -1577,16 +1737,22 @@ class ParametrizedJob(DAG):
         bound_kwargs[parameter_name] = key
 
         if len(self.parameter_names) == 1:
-            return Job(func=self.func, kwargs=bound_kwargs)
+            result: Job | ParametrizedJob = Job(func=self.func, kwargs=bound_kwargs)
+        else:
+            remaining_names = self.parameter_names[1:]
+            remaining_values = [values[1:] for values in matching]
+            result = ParametrizedJob(
+                func=self.func,
+                parameter_names=remaining_names,
+                parameter_values=remaining_values,
+                kwargs=bound_kwargs,
+            )
 
-        remaining_names = self.parameter_names[1:]
-        remaining_values = [values[1:] for values in matching]
-        return ParametrizedJob(
-            func=self.func,
-            parameter_names=remaining_names,
-            parameter_values=remaining_values,
-            kwargs=bound_kwargs,
-        )
+        # Tag the result so the compiler can resolve its canonical job_id from the
+        # DAG path of this ParametrizedJob, without relying on Python object identity.
+        result._pjob_parent = self  # type: ignore[attr-defined]
+        result._pjob_key = key  # type: ignore[attr-defined]
+        return result
 
     def __iter__(self) -> Iterator[Key]:
         seen: set[Key] = set()

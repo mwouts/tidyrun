@@ -615,6 +615,56 @@ def test_execute_plan(tmp_path: Path) -> None:
     assert result.to_dict() == {"a": "hello/world", "b": "foo/bar"}
 
 
+def test_parametrized_job_dependency_through_same_parameter_no_extra_job(
+    tmp_path: Path,
+) -> None:
+    """Each consume[v] should depend on produce[v] only — no extra duplicate jobs."""
+
+    def produce(x: int) -> int:
+        return x * 2
+
+    def consume(x: int, dep: int) -> int:
+        return dep + x
+
+    values = [1, 2, 3]
+    pjob_produce = ParametrizedJob(
+        func=produce,
+        parameter_names=["x"],
+        parameter_values=[(v,) for v in values],
+    )
+    dag = DAG()
+    dag["produce"] = pjob_produce
+
+    consume_inner = DAG()
+    for v in values:
+        consume_inner[v] = Job(func=consume, kwargs={"x": v, "dep": pjob_produce[v]})
+    dag["consume"] = consume_inner
+
+    plan_dir = dag.materialize(tmp_path / "plan")
+
+    def_names = [
+        str(f.relative_to(plan_dir / "definitions").with_suffix("").as_posix())
+        for f in (plan_dir / "definitions").rglob("*.tidyrun")
+    ]
+    assert not any("arg" in name for name in def_names), (
+        f"Extra job(s) with 'arg' in name: {[n for n in def_names if 'arg' in n]}"
+    )
+
+    for v in values:
+        defn = toml.loads(
+            (plan_dir / "definitions" / f"consume/{v}.tidyrun").read_text(
+                encoding="utf-8"
+            )
+        )
+        deps = defn.get("dependencies", [])
+        assert deps == [f"produce/{v}"], f"consume/{v} has wrong deps: {deps}"
+
+    result = dag.evaluate(tmp_path / "run", dag_path=tmp_path / "plan")
+    result_dict = result.to_dict()
+    for v in values:
+        assert result_dict["consume"][v] == v * 2 + v
+
+
 def test_get_job_states(tmp_path: Path) -> None:
     dag = DAG()
     dag["a"] = Job(func=_join_with_sep, kwargs={"left": "x", "right": "y"})
@@ -627,3 +677,122 @@ def test_get_job_states(tmp_path: Path) -> None:
     dag.execute_materialized(dag_path=plan_dir, output_path=plan_dir / "outputs")
 
     assert get_job_states(plan_dir) == {"a": "succeeded", "b": "succeeded"}
+
+
+def test_flat_dag_writes_root_metadata(tmp_path: Path) -> None:
+    """After executing a flat DAG, outputs.tidyrun exists with dict-folder encoding."""
+    import toml
+    from tidyrun.serialization.metadata import checksum_for_named_children, read_metadata
+
+    dag = DAG(
+        {
+            "a": Job(func=_join_with_sep, kwargs={"left": "hello", "right": "world"}),
+            "b": Job(func=_join_with_sep, kwargs={"left": "foo", "right": "bar"}),
+        }
+    )
+    outputs_path = tmp_path / "outputs"
+    plan_dir = dag.materialize(tmp_path / "plan")
+    dag.execute_materialized(dag_path=plan_dir, output_path=outputs_path)
+
+    root_meta_file = outputs_path.with_suffix(".tidyrun")
+    assert root_meta_file.exists(), "outputs.tidyrun should be written after DAG execution"
+
+    root_meta = toml.loads(root_meta_file.read_text())
+    assert root_meta["encoding"] == "dict-folder"
+    assert root_meta["suffix"] == ""
+
+    # Checksum must match what checksum_for_named_children would produce
+    from tidyrun.keys import encode_key
+    children = []
+    for key in ["a", "b"]:
+        encoded = encode_key(key)
+        child_meta = read_metadata(outputs_path / encoded)
+        children.append((encoded, child_meta["checksum"]))
+    expected = checksum_for_named_children(children)
+
+    assert root_meta["checksum"]["algorithm"] == expected.algorithm
+    assert root_meta["checksum"]["digest"] == expected.digest
+
+
+def test_nested_dag_writes_group_and_root_metadata(tmp_path: Path) -> None:
+    """Nested DAGs produce .tidyrun files for every group level."""
+    import toml
+    from tidyrun import deserialize
+
+    inner = DAG(
+        {
+            "x": Job(func=_join_with_sep, kwargs={"left": "a", "right": "b"}),
+            "y": Job(func=_join_with_sep, kwargs={"left": "c", "right": "d"}),
+        }
+    )
+    dag = DAG({"group": inner})
+    outputs_path = tmp_path / "outputs"
+    plan_dir = dag.materialize(tmp_path / "plan")
+    dag.execute_materialized(dag_path=plan_dir, output_path=outputs_path)
+
+    group_meta_file = outputs_path / "group.tidyrun"
+    root_meta_file = outputs_path.with_suffix(".tidyrun")
+
+    assert group_meta_file.exists(), "outputs/group.tidyrun should be written"
+    assert root_meta_file.exists(), "outputs.tidyrun should be written"
+
+    group_meta = toml.loads(group_meta_file.read_text())
+    assert group_meta["encoding"] == "dict-folder"
+
+    root_meta = toml.loads(root_meta_file.read_text())
+    assert root_meta["encoding"] == "dict-folder"
+
+    # deserialize should still return the correct LazyDict
+    result = deserialize(outputs_path)
+    assert result.to_dict() == {"group": {"x": "a/b", "y": "c/d"}}
+
+
+def test_dag_metadata_consistent_with_serialize(tmp_path: Path) -> None:
+    """The checksum in outputs.tidyrun matches serialize(equivalent_dict)."""
+    from tidyrun import deserialize, serialize
+    from tidyrun.serialization.metadata import read_metadata
+
+    dag = DAG(
+        {
+            "a": Job(func=lambda: 42, kwargs={}),
+            "b": Job(func=lambda: "hello", kwargs={}),
+        }
+    )
+    outputs_path = tmp_path / "dag_outputs"
+    plan_dir = dag.materialize(tmp_path / "plan")
+    dag.execute_materialized(dag_path=plan_dir, output_path=outputs_path)
+
+    # Serialize the equivalent dict to a separate location
+    equivalent_dict = {"a": 42, "b": "hello"}
+    serialize_path = tmp_path / "serialized"
+    serialize(equivalent_dict, serialize_path)
+
+    dag_root_meta = read_metadata(outputs_path)
+    ser_root_meta = read_metadata(serialize_path)
+
+    assert dag_root_meta["checksum"].digest == ser_root_meta["checksum"].digest
+
+
+def test_dag_skip_completed_preserves_metadata(tmp_path: Path) -> None:
+    """Re-running with skip_completed=True produces consistent metadata."""
+    import toml
+
+    dag = DAG(
+        {
+            "a": Job(func=_join_with_sep, kwargs={"left": "x", "right": "y"}),
+        }
+    )
+    plan_dir = dag.materialize(tmp_path / "plan")
+    outputs_path = tmp_path / "plan" / "outputs"
+
+    dag.execute_materialized(dag_path=plan_dir, output_path=outputs_path)
+
+    root_meta_before = toml.loads(outputs_path.with_suffix(".tidyrun").read_text())
+
+    # Second run with skip_completed — should not error and metadata should be consistent
+    dag.execute_materialized(
+        dag_path=plan_dir, output_path=outputs_path, skip_completed=True
+    )
+
+    root_meta_after = toml.loads(outputs_path.with_suffix(".tidyrun").read_text())
+    assert root_meta_before["checksum"]["digest"] == root_meta_after["checksum"]["digest"]

@@ -2,6 +2,33 @@
 
 All notable changes to TidyRun are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `DAG.execute_materialized` (and `evaluate`, `evaluate_in_subprocesses`) now
+  writes a `.tidyrun` metadata file for the outputs directory and for every
+  intermediate group folder in a nested DAG, using `encoding = "dict-folder"`
+  and a combined checksum computed via `checksum_for_named_children`. This makes
+  the on-disk layout of a DAG execution identical to what `serialize(dict, path)`
+  produces, so `deserialize` returns a `LazyDict` with the correct checksum at
+  every level. The metadata files are written by lightweight synthetic aggregator
+  jobs that are injected into the dependency graph and run inline (no subprocess)
+  after their children complete; they are skipped when `skip_completed=True` and
+  the metadata already exists.
+
+### Changed
+
+- Documentation API reference sections for `serialize`, `deserialize`,
+  `LazyDict`, `DAG`, `Job`, `ParametrizedJob`, `encode_key`, and `decode_key`
+  are now auto-generated from docstrings via `mkdocstrings`, preventing
+  signature drift between source and docs.
+
+### Fixed
+
+- Removed unnecessary duplicate jobs that were created in a DAG when a
+  parametrized job had dependencies.
+
 ## [0.0.6] — (2026-06-02)
 
 ### Added

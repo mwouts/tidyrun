@@ -145,7 +145,31 @@ def serialize(
     target: str | Path | CloudPath,
     encoders: Iterable[EncoderSpec] | None = None,
 ) -> ChecksumInfo:
-    """Serialize a value with the configured encoder sequence."""
+    """Serialize a Python value to disk using the configured encoder pipeline.
+
+    Parameters
+    ----------
+    value :
+        The value to serialize (dict, DataFrame, Series, scalar, etc.).
+    target :
+        Where to write the output. Extension-free; the encoder appends the
+        appropriate suffix. Accepts local paths or ``s3://`` URIs (requires
+        the optional ``boto3`` dependency installed via ``pip install tidyrun[s3]``).
+    encoders :
+        Custom encoder pipeline. Defaults to :func:`default_encoders`.
+
+    Returns
+    -------
+    ChecksumInfo
+        Checksum (``algorithm``, ``digest``) for the serialized payload.
+
+    Raises
+    ------
+    TidyRunSerializationError
+        When no encoder matches the value type.
+    NotImplementedError
+        When an S3 target is requested without the optional dependency.
+    """
     path = AnyPath(target)
     encoder_list = tuple(default_encoders() if encoders is None else encoders)
     selected_encoder: EncoderSpec | None = None
@@ -188,10 +212,31 @@ def serialize(
 def deserialize(
     source: str | Path | CloudPath, encoders: Iterable[EncoderSpec] | None = None
 ) -> Any:
-    """
-    Deserialize a value from an extension-free location using metadata.
+    """Deserialize a value from disk using metadata to determine the format.
 
-    Directories are deserialized as LazyDict objects
+    Directories encoded as ``dict-folder`` are returned as :class:`LazyDict`
+    objects whose values are loaded on first access.
+
+    Parameters
+    ----------
+    source :
+        Location to read from. Accepts local paths or ``s3://`` URIs (requires
+        the optional ``boto3`` dependency installed via ``pip install tidyrun[s3]``).
+    encoders :
+        Custom encoder pipeline. Defaults to :func:`default_encoders`.
+
+    Returns
+    -------
+    Any
+        ``LazyDict`` for dict-folder outputs; ``pd.DataFrame`` / ``pd.Series``
+        for tabular outputs; the original Python object for scalar or pickle
+        outputs.
+
+    Raises
+    ------
+    TidyRunDeserializationError
+        When metadata is missing, the encoder name is unknown, or the payload
+        cannot be read.
     """
     path = AnyPath(source)
     encoder_list = tuple(default_encoders() if encoders is None else encoders)

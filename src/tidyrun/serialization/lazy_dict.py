@@ -133,27 +133,39 @@ class LazyDict(Mapping[Key, Any]):
     ) -> Any:
         """Concatenate leaf values from a nested LazyDict.
 
-        Parameters:
-        - names: names for the concatenation key levels. Use None to drop a level
-          and concatenate values without that index level.
-        - transform: optional function applied to each selected leaf value.
-          The transformed value may be a pandas DataFrame, pandas Series,
-          or a scalar value.
-        - select: optional predicate called as ``select(path)`` where ``path``
-          is a tuple of keys to a node (for example, ``("run_001", "metrics")``).
-          Selection is evaluated before loading child values, so paths that are
-          filtered out are never deserialized.
-        - max_workers: when set, leaf values are loaded in parallel using a
-          :class:`~concurrent.futures.ThreadPoolExecutor` with this many worker
-          threads.  Useful when leaves are large files (e.g. Parquet) and I/O
-          dominates.  When ``None`` (default), loading is sequential.
+        Parameters
+        ----------
+        names :
+            Names for the MultiIndex levels built from nested keys. Pass
+            ``None`` for a level to drop it from the index and concatenate
+            without that level.
+        transform :
+            Optional function applied to each selected leaf value before
+            concatenation. The result may be a ``pd.DataFrame``,
+            ``pd.Series``, or a scalar (which is wrapped as a one-row
+            ``"value"`` column).
+        select :
+            Optional predicate called as ``select(path)`` where ``path`` is a
+            tuple of keys leading to a node (e.g. ``("run_001", "metrics")``).
+            Evaluated before loading child values, so filtered paths are never
+            deserialized.
+        max_workers :
+            When set, leaf values are loaded in parallel using a
+            :class:`~concurrent.futures.ThreadPoolExecutor` with this many
+            worker threads. Useful when leaves are large files (e.g. Parquet)
+            and I/O dominates. When ``None`` (default), loading is sequential.
 
-        Returns a pandas DataFrame from ``pd.concat`` with a MultiIndex built
-        from selected leaf paths. Scalar transformed values are wrapped as a
-        single-row Series before concatenation.
+        Returns
+        -------
+        pd.DataFrame
+            Result of ``pd.concat`` with a MultiIndex built from the selected
+            leaf paths.
 
-        Raises ValueError if a LazyDict is encountered but names is not deep
-        enough to reach all leaf values.
+        Raises
+        ------
+        ValueError
+            When a ``LazyDict`` node is encountered but ``names`` does not have
+            enough levels to reach leaf values, or when no values are selected.
         """
         import pandas as pd  # pyright: ignore[reportMissingTypeStubs]
 

@@ -44,6 +44,42 @@ def _validate_name(name: str, *, error_type: Type[ValueError]) -> None:
 
 
 def encode_key(key: Key) -> str:
+    """Encode a Python key value to a path-safe string using TOML.
+
+    Supported types are ``str``, ``int``, ``float``, ``bool``, ``date``,
+    ``datetime``, and ``time``. Plain strings that round-trip unambiguously
+    through TOML are left unquoted; strings that would otherwise be
+    interpreted as another type (e.g. ``"true"``, ``"42"``) are
+    TOML-quoted.
+
+    Parameters
+    ----------
+    key :
+        The key value to encode.
+
+    Returns
+    -------
+    str
+        A non-empty string suitable for use as a filesystem path component.
+
+    Raises
+    ------
+    TidyRunKeyEncodingError
+        When the key type is not supported or the resulting name violates
+        path constraints (empty, contains ``/`` or ``\\``, starts with
+        ``.``, or ends with ``.tidyrun``).
+
+    Examples
+    --------
+    >>> encode_key(42)
+    '42'
+    >>> encode_key("hello")
+    'hello'
+    >>> encode_key("true")
+    '"true"'
+    >>> encode_key(True)
+    'true'
+    """
     if not _is_supported_key(key):
         raise TidyRunKeyEncodingError(f"Unsupported key type: {type(key).__name__}")
 
@@ -81,6 +117,36 @@ def encode_key(key: Key) -> str:
 
 
 def decode_key(name: str) -> Key:
+    """Decode a stored key name back to its original Python type.
+
+    Reverses the encoding produced by :func:`encode_key`.
+
+    Parameters
+    ----------
+    name :
+        The encoded key name (a filesystem path component).
+
+    Returns
+    -------
+    Key
+        The original Python value (``str``, ``int``, ``float``, ``bool``,
+        ``date``, ``datetime``, or ``time``).
+
+    Raises
+    ------
+    TidyRunKeyDecodingError
+        When the name is empty, contains path separators, or cannot be
+        decoded to a supported key type.
+
+    Examples
+    --------
+    >>> decode_key("hello")
+    'hello'
+    >>> decode_key('"true"')
+    'true'
+    >>> decode_key("42")
+    42
+    """
     _validate_name(name, error_type=TidyRunKeyDecodingError)
 
     try:
