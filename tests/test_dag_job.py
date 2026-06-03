@@ -407,8 +407,19 @@ def test_job_dependency_runs_after_inputs_ready(tmp_path: Path) -> None:
     consumer = Job(func=consume, kwargs={"x": producer})
 
     dag = DAG({"result": consumer})
-    result = dag.evaluate(tmp_path / "dependency")
+    plan_dir = dag.materialize(tmp_path / "plan")
 
+    # Dependency arg is exposed as a symlink + sidecar in inputs/
+    sym = plan_dir / "inputs" / "result" / "x"
+    assert sym.is_symlink(), f"Dependency symlink missing: {sym}"
+    sidecar = plan_dir / "inputs" / "result" / "x.tidyrun"
+    assert sidecar.exists(), f"Dependency sidecar missing: {sidecar}"
+    sidecar_data = toml.loads(sidecar.read_text(encoding="utf-8"))
+    assert isinstance(sidecar_data.get("dep_output_id"), str)
+
+    result = dag.execute_materialized(
+        dag_path=plan_dir, output_path=tmp_path / "outputs"
+    )
     assert result.to_dict() == {"result": 3}
 
 
@@ -659,6 +670,17 @@ def test_parametrized_job_dependency_through_same_parameter_no_extra_job(
         deps = defn.get("dependencies", [])
         assert deps == [f"produce/{v}"], f"consume/{v} has wrong deps: {deps}"
 
+    # Each consumer instance has a symlink + sidecar for the dep kwarg.
+    for v in values:
+        sym = plan_dir / "inputs" / "consume" / str(v) / "dep"
+        assert sym.is_symlink(), f"Symlink missing for consume/{v}/dep"
+        sidecar = plan_dir / "inputs" / "consume" / str(v) / "dep.tidyrun"
+        assert sidecar.exists()
+        assert (
+            toml.loads(sidecar.read_text())["dep_output_id"]
+            == f"produce/{encode_key(v)}"
+        )
+
     result = dag.evaluate(tmp_path / "run", dag_path=tmp_path / "plan")
     result_dict = result.to_dict()
     for v in values:
@@ -702,6 +724,17 @@ def test_parametrized_job_dependency_by_parameter_name_selector(
         (plan_dir / "definitions" / "consume.tidyrun").read_text(encoding="utf-8")
     )
     assert consume_definition.get("dependencies") == ["produce/{x}"]
+
+    # Each consumer instance exposes its aligned dep via a per-instance symlink.
+    for v in values:
+        sym = plan_dir / "inputs" / "consume" / str(v) / "dep"
+        assert sym.is_symlink(), f"Symlink missing for consume/{v}/dep"
+        sidecar = plan_dir / "inputs" / "consume" / str(v) / "dep.tidyrun"
+        assert sidecar.exists()
+        assert (
+            toml.loads(sidecar.read_text())["dep_output_id"]
+            == f"produce/{encode_key(v)}"
+        )
 
     result = dag.evaluate(tmp_path / "run", dag_path=plan_dir)
     result_dict = result.to_dict()
@@ -754,6 +787,17 @@ def test_parametrized_job_dep_whole_pjob_as_kwarg(
         f"Extra arg-named definition files found: {definition_names}"
     )
     assert definition_names == {"produce", "consume"}
+
+    # Whole ParametrizedJob as dep: each consumer instance gets a per-instance symlink.
+    for v in values:
+        sym = plan_dir / "inputs" / "consume" / str(v) / "dep"
+        assert sym.is_symlink(), f"Symlink missing for consume/{v}/dep"
+        sidecar = plan_dir / "inputs" / "consume" / str(v) / "dep.tidyrun"
+        assert sidecar.exists()
+        assert (
+            toml.loads(sidecar.read_text())["dep_output_id"]
+            == f"produce/{encode_key(v)}"
+        )
 
     result = dag.evaluate(tmp_path / "run", dag_path=plan_dir)
     result_dict = result.to_dict()

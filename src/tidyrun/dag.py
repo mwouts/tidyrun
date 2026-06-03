@@ -784,6 +784,41 @@ class DAG(Mapping[Key, Node]):
 
             raise ValueError(f"Unknown reference kind: {kind!r}")
 
+        def _write_dep_symlink(
+            owner_job_id: str, arg_name: str, dep_output_id: str
+        ) -> None:
+            """Create inputs/{owner_job_id}/{arg_name} → dep output symlink + sidecar.
+
+            The filesystem symlink points to the plan-local outputs dir for visual
+            inspection.  The .tidyrun sidecar stores dep_output_id so that
+            _resolve_arg can pair it with the *actual* outputs path at execution
+            time, which may differ from the plan-local one.
+            """
+            if not isinstance(plan_paths.inputs, Path) or not isinstance(
+                plan_paths.outputs, Path
+            ):
+                return
+            symlink_path = plan_paths.inputs / owner_job_id / arg_name
+            symlink_path.parent.mkdir(parents=True, exist_ok=True)
+            target = plan_paths.outputs / dep_output_id
+            relative_target = Path(os.path.relpath(target, symlink_path.parent))
+            if not symlink_path.exists() and not symlink_path.is_symlink():
+                symlink_path.symlink_to(relative_target)
+            # Sidecar carries dep_output_id so execution can resolve it against
+            # the actual (possibly different) outputs path.
+            sidecar = symlink_path.parent / (arg_name + ".tidyrun")
+            sidecar.write_text(
+                toml.dumps(  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+                    {
+                        "version": 1,
+                        "encoding": "symlink",
+                        "suffix": "",
+                        "dep_output_id": dep_output_id,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
         def _compile_operand(
             value: Any,
             owner_job_id: str,
@@ -802,6 +837,17 @@ class DAG(Mapping[Key, Node]):
                     if isinstance(pjob_key, str) and pjob_key in group_parameter_names:
                         parent_path = _node_dag_path(pjob_parent)
                         if parent_path is not None:
+                            # Per-instance symlink: extract the encoded value of
+                            # pjob_key from this instance's owner_job_id.
+                            param_idx = list(group_parameter_names).index(pjob_key)
+                            instance_suffix = owner_job_id[len(array_group) + 1 :]
+                            segments = instance_suffix.split("/")
+                            if param_idx < len(segments):
+                                _write_dep_symlink(
+                                    owner_job_id,
+                                    arg_name,
+                                    f"{parent_path}/{segments[param_idx]}",
+                                )
                             return {
                                 "kind": "dependency",
                                 "ref": {
@@ -821,6 +867,39 @@ class DAG(Mapping[Key, Node]):
                     array_group=None,
                     group_parameter_names=None,
                 )
+
+                if ref.get("kind") == "job":
+                    dep_output_id = ref.get("job_id")
+                    if isinstance(dep_output_id, str):
+                        _write_dep_symlink(owner_job_id, arg_name, dep_output_id)
+                elif isinstance(value, ParametrizedJob):
+                    if array_group is not None:
+                        # Aligned parametrized dep: per-instance symlink by
+                        # traversing the group ref with this instance's key segments.
+                        prefix = array_group + "/"
+                        if owner_job_id.startswith(prefix):
+                            key_suffix = owner_job_id[len(prefix) :]
+                            sub_ref: dict[str, Any] = cast(dict[str, Any], ref)
+                            for seg in key_suffix.split("/"):
+                                if sub_ref.get("kind") != "group":
+                                    sub_ref = {}
+                                    break
+                                sub_ref = cast(
+                                    dict[str, Any],
+                                    cast(
+                                        dict[str, Any], sub_ref.get("entries", {})
+                                    ).get(seg, {}),
+                                )
+                            dep_instance_id = sub_ref.get("job_id")
+                            if isinstance(dep_instance_id, str):
+                                _write_dep_symlink(
+                                    owner_job_id, arg_name, dep_instance_id
+                                )
+                    else:
+                        # Whole ParametrizedJob as dep: symlink to the group root output.
+                        group_root = _node_dag_path(value)
+                        if group_root is not None:
+                            _write_dep_symlink(owner_job_id, arg_name, group_root)
 
                 # When a ParametrizedJob is used as dep inside a parametrized
                 # context, record the owner's array group so the runtime can

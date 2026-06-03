@@ -23,6 +23,7 @@ All notable changes to TidyRun are documented in this file.
   `LazyDict`, `DAG`, `Job`, `ParametrizedJob`, `encode_key`, and `decode_key`
   are now auto-generated from docstrings via `mkdocstrings`, preventing
   signature drift between source and docs.
+- Dependent jobs now appear as symlinks in the materialized plan inputs
 
 ### Fixed
 

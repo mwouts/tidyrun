@@ -324,6 +324,7 @@ def _resolve_arg(
     plan_dir: Path,
     spec: Mapping[str, Any],
     *,
+    arg_name: str | None = None,
     requested_job_id: str | None = None,
     outputs_path: Path | None = None,
 ) -> Any:
@@ -379,46 +380,19 @@ def _resolve_arg(
         )
 
     if kind == "dependency":
-        ref = spec.get("ref")
-        if not isinstance(ref, dict):
-            raise ValueError(f"Invalid dependency arg spec: {spec!r}")
-        dep_outputs = outputs_path if outputs_path is not None else plan_dir / "outputs"
-
-        # When the dep was compiled from a ParametrizedJob inside a parametrized
-        # context, align_group is set.  In that case, select only the sub-entry
-        # that matches the current instance's key segment(s) rather than loading
-        # the entire group.
-        align_group = spec.get("align_group")
-        if (
-            align_group
-            and isinstance(align_group, str)
-            and requested_job_id is not None
-        ):
-            prefix = align_group + "/"
-            if not requested_job_id.startswith(prefix):
-                raise ValueError(
-                    f"job_id {requested_job_id!r} does not start with "
-                    f"align_group prefix {prefix!r}"
-                )
-            key_suffix = requested_job_id[len(prefix) :]
-            key_segments = key_suffix.split("/")
-            sub_ref: Mapping[str, Any] = cast(Mapping[str, Any], ref)
-            for seg in key_segments:
-                if sub_ref.get("kind") != "group":
-                    raise ValueError(
-                        f"Cannot index aligned dependency with segment {seg!r}: "
-                        f"expected a group ref but got {sub_ref.get('kind')!r}"
-                    )
-                entries = cast(dict[str, Any], sub_ref.get("entries", {}))
-                if seg not in entries:
-                    raise ValueError(
-                        f"Aligned dependency has no entry for key {seg!r}. "
-                        f"Available keys: {sorted(entries)}"
-                    )
-                sub_ref = cast(Mapping[str, Any], entries[seg])
-            return resolve_ref_from_outputs(dep_outputs, sub_ref)
-
-        return resolve_ref_from_outputs(dep_outputs, cast(Mapping[str, Any], ref))
+        if arg_name is None or requested_job_id is None:
+            raise ValueError(
+                "arg_name and requested_job_id are required to resolve a dependency arg"
+            )
+        sidecar = plan_dir / "inputs" / requested_job_id / (arg_name + ".tidyrun")
+        data = cast(dict[str, Any], toml.loads(sidecar.read_text(encoding="utf-8")))
+        dep_output_id = data.get("dep_output_id")
+        if not isinstance(dep_output_id, str):
+            raise ValueError(f"dep_output_id not found in sidecar {sidecar}")
+        actual_outputs = (
+            outputs_path if outputs_path is not None else plan_dir / "outputs"
+        )
+        return deserialize(actual_outputs / dep_output_id)
 
     raise ValueError(f"Unknown arg kind: {kind!r}")
 
@@ -483,6 +457,7 @@ def load_job_inputs(
             resolved_inputs[name] = _resolve_arg(
                 plan_dir,
                 spec,
+                arg_name=name,
                 requested_job_id=requested_job_id,
                 outputs_path=resolved_out,
             )
