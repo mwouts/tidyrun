@@ -328,8 +328,7 @@ def test_moto_full_dag_submitted_job_ids_match_plan(
 
     with pytest.raises(Exception):
         dag.execute_materialized(
-            dag_path=plan_dir,
-            output_path=tmp_path / "outputs",
+            plan_dir,
             executor=executor,
         )
     executor.shutdown()

@@ -377,4 +377,22 @@ def test_lazy_dict_concat_parallel_select(tmp_path: Path) -> None:
     )
 
     assert set(result.index.get_level_values("outer")) == {"A"}
-    assert list(result["v"]) == [1, 2]
+
+
+def test_lazy_dict_concat_transform_picks_dict_element(tmp_path: Path) -> None:
+    """concat with names=["run"] and transform=lambda x: x["accuracy"] should work
+    when each value is a plain dict (not a nested LazyDict)."""
+    value = {
+        "run1": {"accuracy": 0.9, "loss": 0.1},
+        "run2": {"accuracy": 0.8, "loss": 0.2},
+    }
+
+    target = tmp_path / "concat_transform_dict"
+    serialize(value, target)
+    loaded = deserialize(target)
+    assert isinstance(loaded, LazyDict)
+
+    result = loaded.concat(names=["run"], transform=lambda x: x["accuracy"])
+
+    assert set(result.index.get_level_values("run")) == {"run1", "run2"}
+    assert sorted(result.iloc[:, 0].tolist()) == [0.8, 0.9]

@@ -326,7 +326,6 @@ def _resolve_arg(
     *,
     arg_name: str | None = None,
     requested_job_id: str | None = None,
-    outputs_path: Path | None = None,
 ) -> Any:
     from tidyrun.serialization.api import deserialize
 
@@ -384,15 +383,13 @@ def _resolve_arg(
             raise ValueError(
                 "arg_name and requested_job_id are required to resolve a dependency arg"
             )
-        sidecar = plan_dir / "inputs" / requested_job_id / (arg_name + ".tidyrun")
-        data = cast(dict[str, Any], toml.loads(sidecar.read_text(encoding="utf-8")))
-        dep_output_id = data.get("dep_output_id")
-        if not isinstance(dep_output_id, str):
-            raise ValueError(f"dep_output_id not found in sidecar {sidecar}")
-        actual_outputs = (
-            outputs_path if outputs_path is not None else plan_dir / "outputs"
-        )
-        return deserialize(actual_outputs / dep_output_id)
+        dep_path = plan_dir / "inputs" / requested_job_id / arg_name
+        if isinstance(dep_path, Path) and dep_path.is_symlink():
+            return deserialize(dep_path.resolve())
+        # Non-local (S3) or missing symlink: use sidecar written by _write_dep_symlink
+        sidecar = plan_dir / "inputs" / requested_job_id / f"{arg_name}.tidyrun"
+        dep_output_id = sidecar.read_text(encoding="utf-8").strip()
+        return deserialize(plan_dir / "outputs" / dep_output_id)
 
     raise ValueError(f"Unknown arg kind: {kind!r}")
 
@@ -400,7 +397,6 @@ def _resolve_arg(
 def load_job_inputs(
     job_definition: Mapping[str, Any],
     dag_path: Any,
-    outputs_path: Any | None = None,
 ) -> dict[str, Any]:
     """Load all job inputs by deserializing materialized argument specs.
 
@@ -410,19 +406,12 @@ def load_job_inputs(
         Loaded job definition (from :func:`load_job_definition`).
     dag_path:
         Root of the materialised plan (contains ``definitions/``).
-    outputs_path:
-        Directory where job outputs are stored.  Defaults to
-        ``dag_path/outputs``; pass the same value that was supplied to
-        :meth:`~tidyrun.DAG.execute_materialized` when a custom path was used.
     """
     kwargs_table = job_definition.get("args")
     if not isinstance(kwargs_table, dict):
         raise ValueError("Invalid args section in job definition")
     typed_kwargs_table = cast(dict[str, Any], kwargs_table)
     plan_dir = to_path(dag_path)
-    resolved_out = (
-        to_path(outputs_path) if outputs_path is not None else plan_dir / "outputs"
-    )
     requested_job_id = job_definition.get("_requested_job_id")
     if requested_job_id is not None and not isinstance(requested_job_id, str):
         raise ValueError("Invalid _requested_job_id metadata in job definition")
@@ -459,34 +448,25 @@ def load_job_inputs(
                 spec,
                 arg_name=name,
                 requested_job_id=requested_job_id,
-                outputs_path=resolved_out,
             )
     return resolved_inputs
 
 
+def load_inputs_and_callable(dag_path: Any, job_id: str) -> tuple[Any, dict[str, Any]]:
+    """Return (callable, inputs) for a materialised job, ready to call."""
+    definition = load_job_definition(dag_path, job_id)
+    return load_callable(definition), load_job_inputs(definition, dag_path)
+
+
 def rerun_snippet(dag_path: Any, job_id: str) -> str:
-    """Return a Python snippet that loads and re-runs a single job.
-
-    The snippet is valid for both plain jobs and parametrised job instances.
-    For a parametrised instance (e.g. ``job_id="sum_7/3"``), ``load_job_inputs``
-    resolves the parameter values from the job_id path segments automatically.
-
-    To re-run the job and also save the output (as the DAG executor does), append::
-
-        from tidyrun import serialize
-        serialize(outputs, plan_dir / "outputs" / job_id)
-    """
+    """Return a Python snippet that loads and re-runs a single job."""
     plan_str = str(to_path(dag_path))
     return "\n".join(
         [
             "from pathlib import Path",
-            "from tidyrun import load_callable, load_job_definition, load_job_inputs",
+            "from tidyrun import load_inputs_and_callable",
             "",
-            f"plan_dir = Path({plan_str!r})",
-            f"job_id = {job_id!r}",
-            "definition = load_job_definition(plan_dir, job_id)",
-            "inputs = load_job_inputs(definition, plan_dir)",
-            "func = load_callable(definition)",
+            f"func, inputs = load_inputs_and_callable(Path({plan_str!r}), {job_id!r})",
             "outputs = func(**inputs)",
         ]
     )

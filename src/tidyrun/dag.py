@@ -273,27 +273,6 @@ def _count_unique_jobs(
     )
 
 
-def _resolve_plan_and_output_paths(
-    target: Any | None,
-    dag_path: Any | None,
-    output_path: Any | None,
-) -> tuple[Path, Path]:
-    """Resolve concrete plan/output paths from optional evaluate inputs."""
-    if target is None:
-        if dag_path is None or output_path is None:
-            raise ValueError(
-                "Pass target, or pass both dag_path and output_path when target is None"
-            )
-        return to_path(dag_path), to_path(output_path)
-
-    target_path = to_path(target)
-    resolved_plan = target_path / "plan" if dag_path is None else to_path(dag_path)
-    resolved_output = (
-        target_path / "outputs" if output_path is None else to_path(output_path)
-    )
-    return resolved_plan, resolved_output
-
-
 def _job_id_from_path(path: tuple[Key, ...]) -> str:
     if not path:
         raise ValueError("Cannot derive job_id from empty path")
@@ -354,7 +333,7 @@ def _run_compiled_job(plan_paths: PlanPaths, job_id: str) -> None:
 
     plan_dir = plan_paths.definitions.parent
     definition = load_job_definition(plan_dir, job_id)
-    inputs = load_job_inputs(definition, plan_dir, outputs_path=plan_paths.outputs)
+    inputs = load_job_inputs(definition, plan_dir)
     func = load_callable(definition)
 
     running = running_path(plan_paths.outputs, job_id)
@@ -669,7 +648,7 @@ class DAG(Mapping[Key, Node]):
         prefix: str | None = None,
         progress: bool = False,
         progress_callback: ProgressCallback | None = None,
-    ) -> Path:
+    ) -> Path | CloudPath:
         """Write job definitions and literal inputs for process execution.
 
         Parameters
@@ -738,7 +717,6 @@ class DAG(Mapping[Key, Node]):
         array_group_parameter_names: dict[str, list[str]] = {}
         collected_job_ids_cache: dict[int, frozenset[str]] = {}
         written_definitions: set[Path] = set()
-        synthetic_counter = 0
 
         prefix_tuple: tuple[Any, ...] = (prefix,) if prefix else ()
         # Maps id(pjob) -> canonical DAG path for top-level ParametrizedJob nodes.
@@ -746,15 +724,14 @@ class DAG(Mapping[Key, Node]):
         # Maps job_id -> compiled ref for deduplication across different Job objects
         # that represent the same logical job (e.g. two calls to pjob[key]).
         compiled_job_ids: dict[str, dict[str, Any]] = {}
+        dag_member_path_tuples: dict[int, tuple[Any, ...]] = {}
         for key, node in self._nodes.items():
+            path_tuple: tuple[Any, ...] = (*prefix_tuple, key)  # type: ignore[arg-type]
+            dag_member_path_tuples[id(node)] = path_tuple
             if isinstance(node, Job):
-                preferred_job_ids[id(node)] = _job_id_from_path(
-                    (*prefix_tuple, key)  # type: ignore[arg-type]
-                )
+                preferred_job_ids[id(node)] = _job_id_from_path(path_tuple)
             elif isinstance(node, ParametrizedJob):
-                pjob_paths[id(node)] = _job_id_from_path(
-                    (*prefix_tuple, key)  # type: ignore[arg-type]
-                )
+                pjob_paths[id(node)] = _job_id_from_path(path_tuple)
 
         def _collect_job_ids(ref: Mapping[str, Any]) -> frozenset[str]:
             cached = collected_job_ids_cache.get(id(ref))
@@ -787,37 +764,22 @@ class DAG(Mapping[Key, Node]):
         def _write_dep_symlink(
             owner_job_id: str, arg_name: str, dep_output_id: str
         ) -> None:
-            """Create inputs/{owner_job_id}/{arg_name} → dep output symlink + sidecar.
-
-            The filesystem symlink points to the plan-local outputs dir for visual
-            inspection.  The .tidyrun sidecar stores dep_output_id so that
-            _resolve_arg can pair it with the *actual* outputs path at execution
-            time, which may differ from the plan-local one.
-            """
-            if not isinstance(plan_paths.inputs, Path) or not isinstance(
+            """Record dependency: symlink on local FS, sidecar on non-local (S3)."""
+            input_dir = plan_paths.inputs / owner_job_id
+            input_dir.mkdir(parents=True, exist_ok=True)
+            if isinstance(plan_paths.inputs, Path) and isinstance(
                 plan_paths.outputs, Path
             ):
-                return
-            symlink_path = plan_paths.inputs / owner_job_id / arg_name
-            symlink_path.parent.mkdir(parents=True, exist_ok=True)
-            target = plan_paths.outputs / dep_output_id
-            relative_target = Path(os.path.relpath(target, symlink_path.parent))
-            if not symlink_path.exists() and not symlink_path.is_symlink():
-                symlink_path.symlink_to(relative_target)
-            # Sidecar carries dep_output_id so execution can resolve it against
-            # the actual (possibly different) outputs path.
-            sidecar = symlink_path.parent / (arg_name + ".tidyrun")
-            sidecar.write_text(
-                toml.dumps(  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-                    {
-                        "version": 1,
-                        "encoding": "symlink",
-                        "suffix": "",
-                        "dep_output_id": dep_output_id,
-                    }
-                ),
-                encoding="utf-8",
-            )
+                symlink_path = plan_paths.inputs / owner_job_id / arg_name
+                target = plan_paths.outputs / dep_output_id
+                relative_target = Path(os.path.relpath(target, symlink_path.parent))
+                if symlink_path.is_symlink():
+                    symlink_path.unlink()
+                if not symlink_path.exists():
+                    symlink_path.symlink_to(relative_target)
+            else:
+                sidecar_path = plan_paths.inputs / owner_job_id / f"{arg_name}.tidyrun"
+                sidecar_path.write_text(dep_output_id, encoding="utf-8")
 
         def _compile_operand(
             value: Any,
@@ -827,43 +789,16 @@ class DAG(Mapping[Key, Node]):
             group_parameter_names: tuple[str, ...] | None,
         ) -> dict[str, Any]:
             if isinstance(value, (Job, DAG)):
-                if (
-                    array_group is not None
-                    and group_parameter_names is not None
-                    and isinstance(value, Job)
-                ):
-                    pjob_parent = getattr(value, "_pjob_parent", None)
-                    pjob_key = getattr(value, "_pjob_key", None)
-                    if isinstance(pjob_key, str) and pjob_key in group_parameter_names:
-                        parent_path = _node_dag_path(pjob_parent)
-                        if parent_path is not None:
-                            # Per-instance symlink: extract the encoded value of
-                            # pjob_key from this instance's owner_job_id.
-                            param_idx = list(group_parameter_names).index(pjob_key)
-                            instance_suffix = owner_job_id[len(array_group) + 1 :]
-                            segments = instance_suffix.split("/")
-                            if param_idx < len(segments):
-                                _write_dep_symlink(
-                                    owner_job_id,
-                                    arg_name,
-                                    f"{parent_path}/{segments[param_idx]}",
-                                )
-                            return {
-                                "kind": "dependency",
-                                "ref": {
-                                    "kind": "job",
-                                    "job_id": f"{parent_path}/{{{pjob_key}}}",
-                                },
-                            }
-
-                # Split the owner_job_id by "/" so that path segments containing
-                # slashes (e.g. "pairs/m1/train") don't end up as a single key in
-                # the hint.  A slashed single-element hint would be rejected by
-                # encode_key, triggering the synthetic __job_N fallback.
-                owner_parts = tuple(p for p in owner_job_id.split("/") if p)
+                if id(value) not in dag_member_path_tuples:
+                    raise ValueError(
+                        f"Argument {arg_name!r} of job {owner_job_id!r} depends on a "
+                        "Job or DAG that is not a member of this DAG. "
+                        "Register it as a DAG member before using it as a dependency."
+                    )
+                member_path_tuple = dag_member_path_tuples[id(value)]
                 ref = _compile_node(
                     value,
-                    (*owner_parts, "arg", arg_name),
+                    member_path_tuple,
                     array_group=None,
                     group_parameter_names=None,
                 )
@@ -873,43 +808,10 @@ class DAG(Mapping[Key, Node]):
                     if isinstance(dep_output_id, str):
                         _write_dep_symlink(owner_job_id, arg_name, dep_output_id)
                 elif isinstance(value, ParametrizedJob):
-                    if array_group is not None:
-                        # Aligned parametrized dep: per-instance symlink by
-                        # traversing the group ref with this instance's key segments.
-                        prefix = array_group + "/"
-                        if owner_job_id.startswith(prefix):
-                            key_suffix = owner_job_id[len(prefix) :]
-                            sub_ref: dict[str, Any] = cast(dict[str, Any], ref)
-                            for seg in key_suffix.split("/"):
-                                if sub_ref.get("kind") != "group":
-                                    sub_ref = {}
-                                    break
-                                sub_ref = cast(
-                                    dict[str, Any],
-                                    cast(
-                                        dict[str, Any], sub_ref.get("entries", {})
-                                    ).get(seg, {}),
-                                )
-                            dep_instance_id = sub_ref.get("job_id")
-                            if isinstance(dep_instance_id, str):
-                                _write_dep_symlink(
-                                    owner_job_id, arg_name, dep_instance_id
-                                )
-                    else:
-                        # Whole ParametrizedJob as dep: symlink to the group root output.
-                        group_root = _node_dag_path(value)
-                        if group_root is not None:
-                            _write_dep_symlink(owner_job_id, arg_name, group_root)
+                    group_root = _node_dag_path(value)
+                    if group_root is not None:
+                        _write_dep_symlink(owner_job_id, arg_name, group_root)
 
-                # When a ParametrizedJob is used as dep inside a parametrized
-                # context, record the owner's array group so the runtime can
-                # select the per-instance sub-entry instead of the whole group.
-                if isinstance(value, ParametrizedJob) and array_group is not None:
-                    return {
-                        "kind": "dependency",
-                        "ref": ref,
-                        "align_group": array_group,
-                    }
                 return {"kind": "dependency", "ref": ref}
 
             if array_group is not None and group_parameter_names is not None:
@@ -971,8 +873,6 @@ class DAG(Mapping[Key, Node]):
             array_group: str | None,
             group_parameter_names: tuple[str, ...] | None,
         ) -> dict[str, Any]:
-            nonlocal synthetic_counter
-
             node_id = id(node)
             existing = node_to_ref.get(node_id)
             if existing is not None and existing[0] is node:
@@ -993,8 +893,10 @@ class DAG(Mapping[Key, Node]):
                 if preferred is None:
                     preferred = _job_id_from_path_hint(path_hint)
                 if preferred is None:
-                    synthetic_counter += 1
-                    preferred = f"__job_{synthetic_counter}"
+                    raise ValueError(
+                        "Could not determine a job_id for this node. "
+                        "Ensure every Job is reachable from the DAG's top-level nodes."
+                    )
 
                 job_id = preferred
                 ref: dict[str, Any] = {"kind": "job", "job_id": job_id}
@@ -1064,9 +966,7 @@ class DAG(Mapping[Key, Node]):
             if isinstance(node, ParametrizedJob):
                 entries: dict[str, Any] = {}
                 # If this ParametrizedJob is registered at the DAG top level,
-                # use its canonical path rather than the (potentially wrong)
-                # path_hint, which can be a dependency context path like
-                # "consume/1/arg/dep" instead of "produce".
+                # use its canonical path rather than the path_hint.
                 canonical_path = pjob_paths.get(node_id)
                 effective_array_group = (
                     array_group
@@ -1130,7 +1030,7 @@ class DAG(Mapping[Key, Node]):
             upload_local_tree_to_s3(plan_dir.parent, s3_dag_path)
             tempdir.cleanup()
             reporter.info("done")
-            return to_path(s3_dag_path)
+            return AnyPath(s3_dag_path)
 
         if tempdir is not None:
             tempdir.cleanup()
@@ -1140,9 +1040,7 @@ class DAG(Mapping[Key, Node]):
 
     def execute_materialized(
         self,
-        target: Any | None = None,
-        dag_path: Any | None = None,
-        output_path: Any | None = None,
+        dag_path: Any,
         executor: Executor | None = None,
         max_workers: int | None = None,
         job_resources: Mapping[Key, Mapping[str, str | int]] | None = None,
@@ -1156,16 +1054,9 @@ class DAG(Mapping[Key, Node]):
 
         Parameters
         ----------
-        target:
-            Optional target run directory. By default, plan and outputs are
-            resolved as ``<target>/plan`` and ``<target>/outputs``.
-            May be omitted when both ``dag_path`` and ``output_path`` are
-            provided explicitly.
         dag_path:
-            Optional path to the materialized DAG directory.
-        output_path:
-            Optional explicit output path. When omitted, defaults to
-            ``<target>/outputs``.
+            Path to the materialized DAG directory. Outputs are always written
+            to ``dag_path/outputs``.
         executor:
             Optional custom :class:`~concurrent.futures.Executor`.
         max_workers:
@@ -1191,19 +1082,9 @@ class DAG(Mapping[Key, Node]):
         if executor is not None and max_workers is not None:
             raise ValueError("Pass either executor or max_workers, not both")
 
-        plan_dir, resolved_output = _resolve_plan_and_output_paths(
-            target=target,
-            dag_path=dag_path,
-            output_path=output_path,
-        )
-        # Jobs write their outputs directly to resolved_output so that no
-        # post-processing or re-serialization is required after execution.
-        plan_paths = PlanPaths(
-            definitions=plan_dir / "definitions",
-            inputs=plan_dir / "inputs",
-            outputs=resolved_output,
-        )
-        resolved_output.mkdir(parents=True, exist_ok=True)
+        plan_dir = to_path(dag_path)
+        plan_paths = PlanPaths.from_root(plan_dir)
+        plan_paths.outputs.mkdir(parents=True, exist_ok=True)
         runner_string = plan_paths.to_runner_string()
 
         # Discover jobs by scanning definitions/.
@@ -1282,9 +1163,7 @@ class DAG(Mapping[Key, Node]):
             if execution_mode == "process":
                 with ProcessPoolExecutor(max_workers=max_workers) as pool:
                     return self.execute_materialized(
-                        target=None,
-                        dag_path=plan_dir,
-                        output_path=resolved_output,
+                        plan_dir,
                         executor=pool,
                         job_resources=job_resources,
                         execution_mode=execution_mode,
@@ -1296,9 +1175,7 @@ class DAG(Mapping[Key, Node]):
             else:  # "subprocess" or "thread"
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:
                     return self.execute_materialized(
-                        target=None,
-                        dag_path=plan_dir,
-                        output_path=resolved_output,
+                        plan_dir,
                         executor=pool,
                         job_resources=job_resources,
                         execution_mode=execution_mode,
@@ -1609,13 +1486,11 @@ class DAG(Mapping[Key, Node]):
             )
 
         reporter.info("done")
-        return deserialize(resolved_output)
+        return deserialize(plan_paths.outputs)
 
     def evaluate_in_subprocesses(
         self,
-        target: Any | None = None,
-        dag_path: Any | None = None,
-        output_path: Any | None = None,
+        dag_path: Any,
         executor: Executor | None = None,
         max_workers: int | None = None,
         job_resources: Mapping[Key, Mapping[str, str | int]] | None = None,
@@ -1628,16 +1503,9 @@ class DAG(Mapping[Key, Node]):
 
         Parameters
         ----------
-        target:
-            Optional target run directory. By default, plans and outputs are
-            written to ``<target>/plan`` and ``<target>/outputs``.
-            May be omitted when both ``dag_path`` and ``output_path`` are
-            provided explicitly.
         dag_path:
-            Optional location for materialized plan.
-        output_path:
-            Optional explicit location for final output serialization. When
-            omitted, defaults to ``<target>/outputs``.
+            Location for the materialized plan. Outputs are written to
+            ``dag_path/outputs``.
         executor:
             Optional custom executor.
         max_workers:
@@ -1655,20 +1523,13 @@ class DAG(Mapping[Key, Node]):
         progress_callback:
             Optional callback used for progress messages.
         """
-        resolved_plan, resolved_output = _resolve_plan_and_output_paths(
-            target=target,
-            dag_path=dag_path,
-            output_path=output_path,
-        )
         plan_dir = self.materialize(
-            resolved_plan,
+            dag_path,
             progress=progress,
             progress_callback=progress_callback,
         )
         return self.execute_materialized(
-            target=None,
-            dag_path=plan_dir,
-            output_path=resolved_output,
+            plan_dir,
             executor=executor,
             max_workers=max_workers,
             job_resources=job_resources,
@@ -1680,9 +1541,7 @@ class DAG(Mapping[Key, Node]):
 
     def evaluate(
         self,
-        target: Any | None = None,
-        dag_path: Any | None = None,
-        output_path: Any | None = None,
+        dag_path: Any,
         executor: Executor | None = None,
         max_workers: int | None = None,
         job_resources: Mapping[Key, Mapping[str, str | int]] | None = None,
@@ -1695,15 +1554,9 @@ class DAG(Mapping[Key, Node]):
 
         Parameters
         ----------
-        target:
-            Optional target run directory on disk. By default, the
-            materialized plan is written to ``<target>/plan`` and final
-            outputs to ``<target>/outputs``. May be omitted when both
-            ``dag_path`` and ``output_path`` are provided explicitly.
         dag_path:
-            Optional location for the materialized execution plan.
-        output_path:
-            Optional explicit location for final output serialization.
+            Directory for the materialized plan. Outputs are written to
+            ``dag_path/outputs``.
         executor:
             Optional :class:`~concurrent.futures.Executor` for parallel
             job launches.
@@ -1730,24 +1583,22 @@ class DAG(Mapping[Key, Node]):
             - ``"process"``: Jobs run in separate processes via
               :class:`~concurrent.futures.ProcessPoolExecutor`. Similar to
               subprocess but with potentially faster worker pool management.
-                skip_completed:
-                        When ``True``, skip jobs whose outputs already exist in the
-                        materialized plan.
-                progress:
-                        When ``True``, emit progress logs for materialization and execution.
-                progress_callback:
-                        Optional callback used for progress messages.
+        skip_completed:
+            When ``True``, skip jobs whose outputs already exist in the
+            materialized plan.
+        progress:
+            When ``True``, emit progress logs for materialization and execution.
+        progress_callback:
+            Optional callback used for progress messages.
 
         Returns
         -------
         LazyDict
-            The deserialized :class:`~tidyrun.LazyDict` at the resolved output
-            path after all nodes have been written.
+            The deserialized :class:`~tidyrun.LazyDict` at ``dag_path/outputs``
+            after all nodes have been written.
         """
         return self.evaluate_in_subprocesses(
-            target=target,
-            dag_path=dag_path,
-            output_path=output_path,
+            dag_path,
             executor=executor,
             max_workers=max_workers,
             job_resources=job_resources,
@@ -1761,7 +1612,6 @@ class DAG(Mapping[Key, Node]):
         self,
         dag_path: Any,
         job_ids: list[str] | None = None,
-        output_path: Any | None = None,
     ) -> None:
         """Delete serialized outputs for jobs in a materialized plan.
 
@@ -1772,26 +1622,17 @@ class DAG(Mapping[Key, Node]):
         Parameters
         ----------
         dag_path:
-            Path to the materialized DAG directory (as passed to
-            :meth:`execute_materialized`).
+            Path to the materialized DAG directory.
         job_ids:
             Optional list of job IDs whose outputs should be cleared.
             When ``None``, all outputs are removed.
-        output_path:
-            Location of job outputs.  Defaults to ``dag_path/outputs`` for
-            backward compatibility, but should be the same value that was
-            passed to :meth:`execute_materialized` when a custom path was used.
         """
         import shutil
 
         from tidyrun.serialization.metadata import metadata_path, read_metadata
 
         plan_dir = to_path(dag_path)
-        outputs_dir = (
-            to_path(output_path)
-            if output_path is not None
-            else PlanPaths.from_root(plan_dir).outputs
-        )
+        outputs_dir = PlanPaths.from_root(plan_dir).outputs
 
         if job_ids is None:
             if outputs_dir.exists():

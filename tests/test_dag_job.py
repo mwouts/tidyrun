@@ -5,7 +5,7 @@ from datetime import date
 import os
 from pathlib import Path
 import time
-from typing import cast
+from typing import Any, cast
 
 import pytest
 import toml
@@ -242,7 +242,7 @@ def test_materialize_plan_layout_for_single_and_parametrized_jobs(
 
     # The top-level DAG key → job-ref mapping is reconstructed from the DAG at
     # execute time (no top_level.tidyrun written). Verify via execute+result.
-    result = dag.evaluate(tmp_path / "run", dag_path=tmp_path / "plan")
+    result = dag.evaluate(tmp_path / "plan")
     assert result.to_dict() == {"single": "solo-x", "grid": {"a": "a-x", "b": "b-x"}}
 
     # load_job_definition works for parametrized instances.
@@ -406,21 +406,16 @@ def test_job_dependency_runs_after_inputs_ready(tmp_path: Path) -> None:
     producer = Job(func=produce, kwargs={})
     consumer = Job(func=consume, kwargs={"x": producer})
 
-    dag = DAG({"result": consumer})
+    dag = DAG({"producer": producer, "result": consumer})
     plan_dir = dag.materialize(tmp_path / "plan")
 
-    # Dependency arg is exposed as a symlink + sidecar in inputs/
+    # Dependency arg is exposed as a symlink in inputs/; no sidecar
     sym = plan_dir / "inputs" / "result" / "x"
     assert sym.is_symlink(), f"Dependency symlink missing: {sym}"
-    sidecar = plan_dir / "inputs" / "result" / "x.tidyrun"
-    assert sidecar.exists(), f"Dependency sidecar missing: {sidecar}"
-    sidecar_data = toml.loads(sidecar.read_text(encoding="utf-8"))
-    assert isinstance(sidecar_data.get("dep_output_id"), str)
+    assert not (plan_dir / "inputs" / "result" / "x.tidyrun").exists()
 
-    result = dag.execute_materialized(
-        dag_path=plan_dir, output_path=tmp_path / "outputs"
-    )
-    assert result.to_dict() == {"result": 3}
+    result = dag.execute_materialized(plan_dir)
+    assert result.to_dict()["result"] == 3
 
 
 def test_shared_job_dependency_is_memoized(tmp_path: Path) -> None:
@@ -451,54 +446,21 @@ def test_evaluate_default_layout_writes_plan_and_outputs_subdirs(
     result = dag.evaluate(run_dir)
 
     assert result.to_dict() == {"a": 1}
-    # Schema v2: definitions/ dir present, no plan.tidyrun
-    assert (run_dir / "plan" / "definitions").is_dir()
-    assert not (run_dir / "plan" / "plan.tidyrun").exists()
+    # Plan and outputs are co-located under run_dir
+    assert (run_dir / "definitions").is_dir()
+    assert not (run_dir / "plan.tidyrun").exists()
     assert (run_dir / "outputs").is_dir()
 
 
-def test_evaluate_accepts_explicit_plan_and_output_paths(tmp_path: Path) -> None:
+def test_evaluate_uses_dag_path_as_plan_and_outputs_root(tmp_path: Path) -> None:
     dag = DAG({"a": Job(func=lambda: 1, kwargs={})})
-    run_dir = tmp_path / "run"
-    explicit_plan = tmp_path / "custom-plan"
-    explicit_output = tmp_path / "custom-output"
+    plan_dir = tmp_path / "my-plan"
 
-    result = dag.evaluate(run_dir, dag_path=explicit_plan, output_path=explicit_output)
+    result = dag.evaluate(plan_dir)
 
     assert result.to_dict() == {"a": 1}
-    assert (explicit_plan / "definitions").is_dir()
-    assert explicit_output.is_dir()
-
-
-def test_evaluate_accepts_explicit_paths_without_target(tmp_path: Path) -> None:
-    dag = DAG({"a": Job(func=lambda: 1, kwargs={})})
-    explicit_plan = tmp_path / "custom-plan"
-    explicit_output = tmp_path / "custom-output"
-
-    result = dag.evaluate(dag_path=explicit_plan, output_path=explicit_output)
-
-    assert result.to_dict() == {"a": 1}
-    assert (explicit_plan / "definitions").is_dir()
-    assert explicit_output.is_dir()
-
-
-def test_evaluate_requires_target_or_both_explicit_paths(tmp_path: Path) -> None:
-    dag = DAG({"a": Job(func=lambda: 1, kwargs={})})
-
-    with pytest.raises(
-        ValueError, match="Pass target, or pass both dag_path and output_path"
-    ):
-        dag.evaluate()
-
-    with pytest.raises(
-        ValueError, match="Pass target, or pass both dag_path and output_path"
-    ):
-        dag.evaluate(dag_path=tmp_path / "plan-only")
-
-    with pytest.raises(
-        ValueError, match="Pass target, or pass both dag_path and output_path"
-    ):
-        dag.evaluate(output_path=tmp_path / "output-only")
+    assert (plan_dir / "definitions").is_dir()
+    assert (plan_dir / "outputs").is_dir()
 
 
 def test_dag_rejects_encoded_keys_starting_with_dot(tmp_path: Path) -> None:
@@ -581,7 +543,7 @@ def test_parametrized_job_plan_has_recursive_structure_and_o1_files(
     assert definition_files_set == {"grid"}, "All instances share one array_group"
 
     # 4. Execute and verify results are correct for all instances.
-    result = dag.evaluate(tmp_path / "run", dag_path=tmp_path / "plan")
+    result = dag.evaluate(tmp_path / "plan")
     grid_result = result.to_dict()["grid"]
     for i in range(n_params):
         assert grid_result[f"param_{i}"] == f"param_{i}-constant_value"
@@ -629,13 +591,13 @@ def test_execute_plan(tmp_path: Path) -> None:
 def test_parametrized_job_dependency_through_same_parameter_no_extra_job(
     tmp_path: Path,
 ) -> None:
-    """Each consume[v] should depend on produce[v] only — no extra duplicate jobs."""
+    """Passing pjob[v] (per-instance) as dep is now an error; whole-group is required."""
 
     def produce(x: int) -> int:
         return x * 2
 
-    def consume(x: int, dep: int) -> int:
-        return dep + x
+    def consume(x: int, dep: Any) -> int:
+        return dep[x] + x
 
     values = [1, 2, 3]
     pjob_produce = ParametrizedJob(
@@ -643,45 +605,25 @@ def test_parametrized_job_dependency_through_same_parameter_no_extra_job(
         parameter_names=["x"],
         parameter_values=[(v,) for v in values],
     )
-    dag = DAG()
-    dag["produce"] = pjob_produce
-
-    consume_inner = DAG()
-    for v in values:
-        consume_inner[v] = Job(func=consume, kwargs={"x": v, "dep": pjob_produce[v]})
-    dag["consume"] = consume_inner
+    pjob_consume = ParametrizedJob(
+        func=consume,
+        parameter_names=["x"],
+        parameter_values=[(v,) for v in values],
+        kwargs={"dep": pjob_produce},
+    )
+    dag = DAG({"produce": pjob_produce, "consume": pjob_consume})
 
     plan_dir = dag.materialize(tmp_path / "plan")
 
-    def_names = [
-        str(f.relative_to(plan_dir / "definitions").with_suffix("").as_posix())
-        for f in (plan_dir / "definitions").rglob("*.tidyrun")
-    ]
-    assert not any("arg" in name for name in def_names), (
-        f"Extra job(s) with 'arg' in name: {[n for n in def_names if 'arg' in n]}"
-    )
-
+    # Each consumer instance has a symlink to the group root (whole produce group)
     for v in values:
-        defn = toml.loads(
-            (plan_dir / "definitions" / f"consume/{v}.tidyrun").read_text(
-                encoding="utf-8"
-            )
-        )
-        deps = defn.get("dependencies", [])
-        assert deps == [f"produce/{v}"], f"consume/{v} has wrong deps: {deps}"
-
-    # Each consumer instance has a symlink + sidecar for the dep kwarg.
-    for v in values:
-        sym = plan_dir / "inputs" / "consume" / str(v) / "dep"
+        sym = plan_dir / "inputs" / f"consume/{encode_key(v)}" / "dep"
         assert sym.is_symlink(), f"Symlink missing for consume/{v}/dep"
-        sidecar = plan_dir / "inputs" / "consume" / str(v) / "dep.tidyrun"
-        assert sidecar.exists()
-        assert (
-            toml.loads(sidecar.read_text())["dep_output_id"]
-            == f"produce/{encode_key(v)}"
-        )
+        assert not (sym.parent / "dep.tidyrun").exists(), "No sidecar expected"
+        # Symlink target resolves to the produce group root
+        assert sym.resolve() == (plan_dir / "outputs" / "produce").resolve()
 
-    result = dag.evaluate(tmp_path / "run", dag_path=tmp_path / "plan")
+    result = dag.evaluate(tmp_path / "plan")
     result_dict = result.to_dict()
     for v in values:
         assert result_dict["consume"][v] == v * 2 + v
@@ -690,13 +632,13 @@ def test_parametrized_job_dependency_through_same_parameter_no_extra_job(
 def test_parametrized_job_dependency_by_parameter_name_selector(
     tmp_path: Path,
 ) -> None:
-    """producer["x"] should resolve to producer[current x], not producer/x."""
+    """Using pjob['x'] (parameter selector) is no longer supported; use whole group."""
 
     def produce(x: int) -> int:
         return x * 2
 
-    def consume(x: int, dep: int) -> int:
-        return dep + x
+    def consume(x: int, dep: Any) -> int:
+        return dep[x] + x
 
     values = [1, 2, 3]
     producer = ParametrizedJob(
@@ -708,7 +650,7 @@ def test_parametrized_job_dependency_by_parameter_name_selector(
         func=consume,
         parameter_names=["x"],
         parameter_values=[(v,) for v in values],
-        kwargs={"dep": producer["x"]},
+        kwargs={"dep": producer},
     )
 
     dag = DAG({"produce": producer, "consume": consumer})
@@ -720,23 +662,14 @@ def test_parametrized_job_dependency_by_parameter_name_selector(
     }
     assert definition_names == {"produce", "consume"}
 
-    consume_definition = toml.loads(
-        (plan_dir / "definitions" / "consume.tidyrun").read_text(encoding="utf-8")
-    )
-    assert consume_definition.get("dependencies") == ["produce/{x}"]
-
-    # Each consumer instance exposes its aligned dep via a per-instance symlink.
+    # Each consumer instance has a symlink to the whole produce group root.
     for v in values:
-        sym = plan_dir / "inputs" / "consume" / str(v) / "dep"
+        sym = plan_dir / "inputs" / f"consume/{encode_key(v)}" / "dep"
         assert sym.is_symlink(), f"Symlink missing for consume/{v}/dep"
-        sidecar = plan_dir / "inputs" / "consume" / str(v) / "dep.tidyrun"
-        assert sidecar.exists()
-        assert (
-            toml.loads(sidecar.read_text())["dep_output_id"]
-            == f"produce/{encode_key(v)}"
-        )
+        assert not (sym.parent / "dep.tidyrun").exists(), "No sidecar expected"
+        assert sym.resolve() == (plan_dir / "outputs" / "produce").resolve()
 
-    result = dag.evaluate(tmp_path / "run", dag_path=plan_dir)
+    result = dag.evaluate(plan_dir)
     result_dict = result.to_dict()
     assert set(result_dict["produce"].keys()) == set(values)
     assert set(result_dict["consume"].keys()) == set(values)
@@ -748,13 +681,13 @@ def test_parametrized_job_dependency_by_parameter_name_selector(
 def test_parametrized_job_dep_whole_pjob_as_kwarg(
     tmp_path: Path, produce_first: bool
 ) -> None:
-    """Passing a whole ParametrizedJob as dep kwarg yields per-instance outputs."""
+    """Passing a whole ParametrizedJob as dep kwarg; consumer slices it by parameter."""
 
     def produce(x: int) -> int:
         return x * 2
 
-    def consume(x: int, dep: int) -> int:
-        return dep + x
+    def consume(x: int, dep: Any) -> int:
+        return dep[x] + x
 
     values = [1, 2, 3]
     producer = ParametrizedJob(
@@ -783,23 +716,16 @@ def test_parametrized_job_dep_whole_pjob_as_kwarg(
         str(f.relative_to(plan_dir / "definitions").with_suffix("").as_posix())
         for f in (plan_dir / "definitions").rglob("*.tidyrun")
     }
-    assert "arg" not in " ".join(definition_names), (
-        f"Extra arg-named definition files found: {definition_names}"
-    )
     assert definition_names == {"produce", "consume"}
 
-    # Whole ParametrizedJob as dep: each consumer instance gets a per-instance symlink.
+    # Each consumer instance has a symlink to the whole produce group root (no sidecar).
     for v in values:
-        sym = plan_dir / "inputs" / "consume" / str(v) / "dep"
+        sym = plan_dir / "inputs" / f"consume/{encode_key(v)}" / "dep"
         assert sym.is_symlink(), f"Symlink missing for consume/{v}/dep"
-        sidecar = plan_dir / "inputs" / "consume" / str(v) / "dep.tidyrun"
-        assert sidecar.exists()
-        assert (
-            toml.loads(sidecar.read_text())["dep_output_id"]
-            == f"produce/{encode_key(v)}"
-        )
+        assert not (sym.parent / "dep.tidyrun").exists(), "No sidecar expected"
+        assert sym.resolve() == (plan_dir / "outputs" / "produce").resolve()
 
-    result = dag.evaluate(tmp_path / "run", dag_path=plan_dir)
+    result = dag.evaluate(plan_dir)
     result_dict = result.to_dict()
     assert set(result_dict["produce"].keys()) == set(values)
     assert set(result_dict["consume"].keys()) == set(values)
@@ -816,7 +742,7 @@ def test_get_job_states(tmp_path: Path) -> None:
 
     assert get_job_states(plan_dir) == {"a": "pending", "b": "pending"}
 
-    dag.execute_materialized(dag_path=plan_dir, output_path=plan_dir / "outputs")
+    dag.execute_materialized(plan_dir)
 
     assert get_job_states(plan_dir) == {"a": "succeeded", "b": "succeeded"}
 
@@ -835,10 +761,10 @@ def test_flat_dag_writes_root_metadata(tmp_path: Path) -> None:
             "b": Job(func=_join_with_sep, kwargs={"left": "foo", "right": "bar"}),
         }
     )
-    outputs_path = tmp_path / "outputs"
     plan_dir = dag.materialize(tmp_path / "plan")
-    dag.execute_materialized(dag_path=plan_dir, output_path=outputs_path)
+    dag.execute_materialized(plan_dir)
 
+    outputs_path = plan_dir / "outputs"
     root_meta_file = outputs_path.with_suffix(".tidyrun")
     assert root_meta_file.exists(), (
         "outputs.tidyrun should be written after DAG execution"
@@ -874,10 +800,10 @@ def test_nested_dag_writes_group_and_root_metadata(tmp_path: Path) -> None:
         }
     )
     dag = DAG({"group": inner})
-    outputs_path = tmp_path / "outputs"
     plan_dir = dag.materialize(tmp_path / "plan")
-    dag.execute_materialized(dag_path=plan_dir, output_path=outputs_path)
+    dag.execute_materialized(plan_dir)
 
+    outputs_path = plan_dir / "outputs"
     group_meta_file = outputs_path / "group.tidyrun"
     root_meta_file = outputs_path.with_suffix(".tidyrun")
 
@@ -906,9 +832,10 @@ def test_dag_metadata_consistent_with_serialize(tmp_path: Path) -> None:
             "b": Job(func=lambda: "hello", kwargs={}),
         }
     )
-    outputs_path = tmp_path / "dag_outputs"
     plan_dir = dag.materialize(tmp_path / "plan")
-    dag.execute_materialized(dag_path=plan_dir, output_path=outputs_path)
+    dag.execute_materialized(plan_dir)
+
+    outputs_path = plan_dir / "outputs"
 
     # Serialize the equivalent dict to a separate location
     equivalent_dict = {"a": 42, "b": "hello"}
@@ -931,18 +858,69 @@ def test_dag_skip_completed_preserves_metadata(tmp_path: Path) -> None:
         }
     )
     plan_dir = dag.materialize(tmp_path / "plan")
-    outputs_path = tmp_path / "plan" / "outputs"
+    dag.execute_materialized(plan_dir)
 
-    dag.execute_materialized(dag_path=plan_dir, output_path=outputs_path)
-
+    outputs_path = plan_dir / "outputs"
     root_meta_before = toml.loads(outputs_path.with_suffix(".tidyrun").read_text())
 
     # Second run with skip_completed — should not error and metadata should be consistent
-    dag.execute_materialized(
-        dag_path=plan_dir, output_path=outputs_path, skip_completed=True
-    )
+    dag.execute_materialized(plan_dir, skip_completed=True)
 
     root_meta_after = toml.loads(outputs_path.with_suffix(".tidyrun").read_text())
     assert (
         root_meta_before["checksum"]["digest"] == root_meta_after["checksum"]["digest"]
     )
+
+
+# ---------------------------------------------------------------------------
+# Plan structure: symlinks, no sidecars, correct dep resolution
+# ---------------------------------------------------------------------------
+
+
+def test_materialized_plan_content(tmp_path: Path) -> None:
+    """Comprehensive check of the materialised plan layout after §3/§4 changes."""
+
+    def produce() -> int:
+        return 7
+
+    def group_fn(x: int) -> int:
+        return x * 10
+
+    def consume(src: int, grp: Any) -> dict[str, Any]:
+        return {"src": src, "grp_1": grp[1], "grp_2": grp[2]}
+
+    producer = Job(func=produce, kwargs={})
+    group = ParametrizedJob(
+        func=group_fn,
+        parameter_names=["x"],
+        parameter_values=[(1,), (2,)],
+    )
+    consumer = Job(func=consume, kwargs={"src": producer, "grp": group})
+
+    dag = DAG({"producer": producer, "group": group, "consumer": consumer})
+    plan_dir = dag.materialize(tmp_path / "plan")
+
+    # --- definition files exist ---
+    assert (plan_dir / "definitions" / "producer.tidyrun").is_file()
+    assert (plan_dir / "definitions" / "group.tidyrun").is_file()
+    assert (plan_dir / "definitions" / "consumer.tidyrun").is_file()
+
+    # --- consumer/src: symlink only, no sidecar ---
+    src_sym = plan_dir / "inputs" / "consumer" / "src"
+    assert src_sym.is_symlink(), "inputs/consumer/src must be a symlink"
+    assert not (plan_dir / "inputs" / "consumer" / "src.tidyrun").exists(), "no sidecar"
+    assert src_sym.resolve() == (plan_dir / "outputs" / "producer").resolve()
+
+    # --- consumer/grp: symlink to group root, no sidecar ---
+    grp_sym = plan_dir / "inputs" / "consumer" / "grp"
+    assert grp_sym.is_symlink(), "inputs/consumer/grp must be a symlink"
+    assert not (plan_dir / "inputs" / "consumer" / "grp.tidyrun").exists(), "no sidecar"
+    assert grp_sym.resolve() == (plan_dir / "outputs" / "group").resolve()
+
+    # --- execute and verify consumer slices dep correctly ---
+    result = dag.execute_materialized(plan_dir)
+    d = result.to_dict()
+    assert d["producer"] == 7
+    assert d["consumer"]["src"] == 7
+    assert d["consumer"]["grp_1"] == 10
+    assert d["consumer"]["grp_2"] == 20

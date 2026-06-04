@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from tidyrun import load_callable, load_job_definition, load_job_inputs
+from tidyrun import load_inputs_and_callable
 from tidyrun.dag import DAG, run_materialized_job
 from tidyrun.job import Job
 
@@ -29,8 +30,7 @@ def test_materialize_and_execute_in_threads(tmp_path: Path) -> None:
 
     plan_dir = dag.materialize(tmp_path / "plan")
     result = dag.execute_materialized(
-        dag_path=plan_dir,
-        output_path=tmp_path / "outputs",
+        plan_dir,
         execution_mode="thread",
         max_workers=2,
     )
@@ -43,7 +43,6 @@ def test_materialize_and_execute_in_subprocesses(tmp_path: Path) -> None:
     dag = DAG({"producer": producer, "consumer": consumer})
 
     plan_dir = tmp_path / "plan"
-    output_dir = tmp_path / "outputs"
 
     materialized = dag.materialize(plan_dir)
     assert materialized == plan_dir
@@ -53,11 +52,7 @@ def test_materialize_and_execute_in_subprocesses(tmp_path: Path) -> None:
     assert (plan_dir / "definitions" / "consumer.tidyrun").is_file()
     assert (plan_dir / "inputs" / "consumer" / "y.tidyrun").is_file()
 
-    result = dag.execute_materialized(
-        dag_path=plan_dir,
-        output_path=output_dir,
-        max_workers=2,
-    )
+    result = dag.execute_materialized(plan_dir, max_workers=2)
     assert result.to_dict() == {"producer": 2, "consumer": 5}
 
 
@@ -70,8 +65,7 @@ def test_each_job_runs_in_separate_python_process(tmp_path: Path) -> None:
     )
 
     result = dag.evaluate_in_subprocesses(
-        target=tmp_path / "pid_outputs",
-        dag_path=tmp_path / "pid_plan",
+        tmp_path / "pid_plan",
         max_workers=2,
     )
 
@@ -87,19 +81,21 @@ def test_job_rerun_snippet_and_public_runner(tmp_path: Path) -> None:
     plan_dir = dag.materialize(tmp_path / "plan")
 
     snippet = job.rerun_snippet(dag_path=plan_dir, job_id="producer")
-    assert "load_job_definition" in snippet
-    assert "load_job_inputs" in snippet
+    assert "load_inputs_and_callable" in snippet
     assert "producer" in snippet
 
+    func, inputs = load_inputs_and_callable(plan_dir, "producer")
+    assert func(**inputs) == 2
+
+    # Also verify via the lower-level API
     definition = load_job_definition(plan_dir, "producer")
     callable_obj = load_callable(definition)
-    inputs = load_job_inputs(definition, plan_dir)
-    assert callable_obj(**inputs) == 2
+    inputs2 = load_job_inputs(definition, plan_dir)
+    assert callable_obj(**inputs2) == 2
 
     run_materialized_job(plan_dir, "producer")
     loaded = DAG({"producer": job}).execute_materialized(
-        dag_path=plan_dir,
-        output_path=tmp_path / "outputs",
+        plan_dir,
         skip_completed=True,
     )
     assert loaded.to_dict() == {"producer": 2}
@@ -131,8 +127,7 @@ def test_execute_progress_callback(tmp_path: Path) -> None:
 
     plan_dir = dag.materialize(tmp_path / "plan")
     result = dag.execute_materialized(
-        dag_path=plan_dir,
-        output_path=tmp_path / "out",
+        plan_dir,
         execution_mode="thread",
         progress=True,
         progress_callback=messages.append,
@@ -155,8 +150,7 @@ def test_execute_progress_default_single_line_output(
 
     plan_dir = dag.materialize(tmp_path / "plan")
     dag.execute_materialized(
-        dag_path=plan_dir,
-        output_path=tmp_path / "out",
+        plan_dir,
         execution_mode="thread",
         progress=True,
     )

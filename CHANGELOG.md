@@ -16,6 +16,9 @@ All notable changes to TidyRun are documented in this file.
   jobs that are injected into the dependency graph and run inline (no subprocess)
   after their children complete; they are skipped when `skip_completed=True` and
   the metadata already exists.
+- `load_inputs_and_callable(dag_path, job_id)` helper: returns `(callable, inputs)`
+  for a materialised job ready to call, combining `load_callable` and `load_job_inputs`.
+  Exported from the top-level `tidyrun` package.
 
 ### Changed
 
@@ -23,13 +26,36 @@ All notable changes to TidyRun are documented in this file.
   `LazyDict`, `DAG`, `Job`, `ParametrizedJob`, `encode_key`, and `decode_key`
   are now auto-generated from docstrings via `mkdocstrings`, preventing
   signature drift between source and docs.
-- Dependent jobs now appear as symlinks in the materialized plan inputs
+- **Self-contained plan layout**: `execute_materialized`, `evaluate`, and
+  `evaluate_in_subprocesses` no longer accept `output_path` or `target`
+  parameters. Outputs are always written to `dag_path/outputs/`, co-located
+  with the plan. This makes symlink-based dependency resolution always valid
+  and eliminates the need to pass a separate output path.
+- **Whole-group dependencies**: when a `ParametrizedJob` is used as a
+  dependency, the consumer receives the entire group output (a `LazyDict`) and
+  is responsible for slicing by parameter value (e.g. `dep[x]`). Per-instance
+  slicing via `pjob["param"]` is no longer supported and raises `ValueError`.
+- **Strict DAG membership**: every `Job` or `DAG` used as a dependency must be
+  registered as a top-level member of the same `DAG`. Anonymous deps that were
+  previously assigned synthetic `__job_N` identifiers now raise `ValueError`.
+- Dependency inputs are now represented as **symlinks** pointing to
+  `../../outputs/<dep_id>` on local filesystems; on S3 a small `.tidyrun`
+  sidecar records the dep output id instead. Symlinks are updated (re-linked)
+  on re-materialisation.
+- `rerun_snippet` now uses `load_inputs_and_callable` instead of the lower-level
+  `load_job_definition` / `load_job_inputs` pair.
+- `materialize` returns `Path | CloudPath` instead of `Path`; the S3 return
+  value is now a proper `S3Path` (via `AnyPath`) rather than a broken local
+  `Path("s3://…")`.
 
 ### Fixed
 
 - Fixed SLURM array jobs always reporting failure even when job outputs were written successfully.
 - Removed unnecessary duplicate jobs that were created in a DAG when a parametrized job had dependencies
 - Fixed failing jobs when a parametrized job depends on another parametrized job
+- `LazyDict.concat` with `transform` and `names` no longer raises
+  "Encountered LazyDict at depth N" when the leaf value is a plain `dict` (or
+  any non-`LazyDict` mapping) that `transform` knows how to handle.
 
 ## [0.0.6] — (2026-06-02)
 

@@ -199,14 +199,15 @@ class LazyDict(Mapping[Key, Any]):
                 encoded_name = encode_key(key)
                 if _entry_is_lazy_dict(node.__serialized_path__, encoded_name):
                     if names is not None and len(current_path) >= len(names):
+                        if transform is not None:
+                            leaf_refs.append((current_path, node, key))
+                            continue
                         raise ValueError(
                             f"Encountered LazyDict at depth {len(current_path)}, "
                             f"but names only has {len(names)} levels. "
                             f"Provide more levels in names to reach leaf values."
                         )
-                    child = node[
-                        key
-                    ]  # cheap: returns a LazyDict without loading children
+                    child = node[key]
                     _collect_refs(child, current_path)
                 else:
                     leaf_refs.append((current_path, node, key))
@@ -221,6 +222,12 @@ class LazyDict(Mapping[Key, Any]):
             _, node, key = ref
             value = node[key]
             transformed = selected_transform(value)
+            if isinstance(transformed, LazyDict):
+                raise ValueError(
+                    f"Transform returned LazyDict for path {ref[0]}, but "
+                    f"concat expects leaf values. Adjust transform or provide "
+                    f"more levels in names to reach leaf values."
+                )
             if isinstance(transformed, (pd.Series, pd.DataFrame)):
                 return transformed
             return pd.Series([transformed], name="value").to_frame()

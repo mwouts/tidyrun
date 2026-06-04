@@ -37,8 +37,7 @@ def test_thread_mode_execution(tmp_path: Path) -> None:
     dag = DAG({"producer": producer, "consumer": consumer})
 
     result = dag.evaluate(
-        target=tmp_path / "thread_outputs",
-        dag_path=tmp_path / "thread_plan",
+        tmp_path / "thread_plan",
         execution_mode="thread",
     )
 
@@ -52,8 +51,7 @@ def test_process_mode_execution(tmp_path: Path) -> None:
     dag = DAG({"producer": producer, "consumer": consumer})
 
     result = dag.evaluate(
-        target=tmp_path / "process_outputs",
-        dag_path=tmp_path / "process_plan",
+        tmp_path / "process_plan",
         execution_mode="process",
         max_workers=2,
     )
@@ -68,8 +66,7 @@ def test_subprocess_mode_execution(tmp_path: Path) -> None:
     dag = DAG({"producer": producer, "consumer": consumer})
 
     result = dag.evaluate(
-        target=tmp_path / "subprocess_outputs",
-        dag_path=tmp_path / "subprocess_plan",
+        tmp_path / "subprocess_plan",
         execution_mode="subprocess",
     )
 
@@ -87,8 +84,7 @@ def test_thread_mode_avoids_process_spawning(tmp_path: Path) -> None:
     )
 
     result = dag.evaluate(
-        target=tmp_path / "thread_pid_outputs",
-        dag_path=tmp_path / "thread_pid_plan",
+        tmp_path / "thread_pid_plan",
         execution_mode="thread",
     )
 
@@ -109,8 +105,7 @@ def test_subprocess_mode_spawns_separate_processes(tmp_path: Path) -> None:
     )
 
     result = dag.evaluate(
-        target=tmp_path / "subprocess_pid_outputs",
-        dag_path=tmp_path / "subprocess_pid_plan",
+        tmp_path / "subprocess_pid_plan",
         execution_mode="subprocess",
     )
 
@@ -131,8 +126,7 @@ def test_process_mode_spawns_separate_processes(tmp_path: Path) -> None:
     )
 
     result = dag.evaluate(
-        target=tmp_path / "process_pid_outputs",
-        dag_path=tmp_path / "process_pid_plan",
+        tmp_path / "process_pid_plan",
         execution_mode="process",
         max_workers=2,
     )
@@ -155,8 +149,7 @@ def test_thread_mode_is_faster_than_subprocess_for_small_jobs(tmp_path: Path) ->
     # Time thread mode
     start_thread = time.time()
     dag.evaluate(
-        target=tmp_path / "thread_bench",
-        dag_path=tmp_path / "thread_bench_plan",
+        tmp_path / "thread_bench_plan",
         execution_mode="thread",
     )
     thread_time = time.time() - start_thread
@@ -164,8 +157,7 @@ def test_thread_mode_is_faster_than_subprocess_for_small_jobs(tmp_path: Path) ->
     # Time subprocess mode
     start_subprocess = time.time()
     dag.evaluate(
-        target=tmp_path / "subprocess_bench",
-        dag_path=tmp_path / "subprocess_bench_plan",
+        tmp_path / "subprocess_bench_plan",
         execution_mode="subprocess",
     )
     subprocess_time = time.time() - start_subprocess
@@ -189,8 +181,7 @@ def test_parallel_execution_with_thread_mode(tmp_path: Path) -> None:
     # Sequential thread execution
     start_seq = time.time()
     dag.evaluate(
-        target=tmp_path / "thread_seq",
-        dag_path=tmp_path / "thread_seq_plan",
+        tmp_path / "thread_seq_plan",
         execution_mode="thread",
     )
     seq_time = time.time() - start_seq
@@ -198,8 +189,7 @@ def test_parallel_execution_with_thread_mode(tmp_path: Path) -> None:
     # Parallel thread execution with max_workers=2
     start_par = time.time()
     dag.evaluate(
-        target=tmp_path / "thread_par",
-        dag_path=tmp_path / "thread_par_plan",
+        tmp_path / "thread_par_plan",
         execution_mode="thread",
         max_workers=2,
     )
