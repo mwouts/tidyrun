@@ -4,6 +4,35 @@ All notable changes to TidyRun are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Internal restructuring of the DAG/Job execution code** (no change to the
+  public API or to the on-disk plan format):
+  - `tidyrun.dag` now contains only the node model (`DAG`, `ParametrizedJob`)
+    and the plan compiler (a dedicated `_PlanCompiler` class replacing the
+    former closure-based `materialize`). All previously importable names are
+    still re-exported from `tidyrun.dag`.
+  - New `tidyrun.execute` module: job runners, `DAGExecutionError`,
+    `batch_entrypoint`, `execute_plan`, and a single dependency scheduler
+    shared by `DAG.execute_materialized` and `execute_plan` (previously four
+    near-identical scheduling loops).
+  - New `tidyrun.plan.read_plan_graph()`: the one place where `definitions/`
+    is scanned into a dependency graph (previously three copies).
+  - New `tidyrun.progress` module hosting the progress reporter.
+  - `execute_materialized(max_workers=...)` no longer re-scans the plan
+    twice; the worker pool is created around a single scheduling pass.
+- On failure with a parallel executor, `DAGExecutionError.cancelled_jobs` now
+  also includes blocked jobs that never became ready (matching the serial
+  behaviour and the documented semantics).
+- `ParametrizedJob.__getitem__` with an unknown key (including a parameter
+  *name*, whose selector semantics were removed earlier) now raises `KeyError`
+  consistently with the `Mapping` protocol.
+- Dead code left over from removed plan-format features was deleted: `{param}`
+  placeholder substitution in dependencies and arg specs, `job_id_from_request`
+  hydration, grouped-literal selectors, and
+  `tidyrun.plan.resolve_ref_from_outputs`. Plans written by the current
+  `materialize()` never contained these constructs.
+
 ### Added
 
 - `DAG.execute_materialized` (and `evaluate`, `evaluate_in_subprocesses`) now
@@ -34,7 +63,7 @@ All notable changes to TidyRun are documented in this file.
 - **Whole-group dependencies**: when a `ParametrizedJob` is used as a
   dependency, the consumer receives the entire group output (a `LazyDict`) and
   is responsible for slicing by parameter value (e.g. `dep[x]`). Per-instance
-  slicing via `pjob["param"]` is no longer supported and raises `ValueError`.
+  slicing via `pjob["param"]` is no longer supported and raises `KeyError`.
 - **Strict DAG membership**: every `Job` or `DAG` used as a dependency must be
   registered as a top-level member of the same `DAG`. Anonymous deps that were
   previously assigned synthetic `__job_N` identifiers now raise `ValueError`.
