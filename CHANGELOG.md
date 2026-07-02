@@ -4,84 +4,41 @@ All notable changes to TidyRun are documented in this file.
 
 ## [0.0.7] — (2026-07-02)
 
-### Changed
-
-- **Internal restructuring of the DAG/Job execution code** (no change to the
-  public API or to the on-disk plan format):
-  - `tidyrun.dag` now contains only the node model (`DAG`, `ParametrizedJob`)
-    and the plan compiler (a dedicated `_PlanCompiler` class replacing the
-    former closure-based `materialize`). All previously importable names are
-    still re-exported from `tidyrun.dag`.
-  - New `tidyrun.execute` module: job runners, `DAGExecutionError`,
-    `batch_entrypoint`, `execute_plan`, and a single dependency scheduler
-    shared by `DAG.execute_materialized` and `execute_plan` (previously four
-    near-identical scheduling loops).
-  - New `tidyrun.plan.read_plan_graph()`: the one place where `definitions/`
-    is scanned into a dependency graph (previously three copies).
-  - New `tidyrun.progress` module hosting the progress reporter.
-  - `execute_materialized(max_workers=...)` no longer re-scans the plan
-    twice; the worker pool is created around a single scheduling pass.
-- On failure with a parallel executor, `DAGExecutionError.cancelled_jobs` now
-  also includes blocked jobs that never became ready (matching the serial
-  behaviour and the documented semantics).
-- `ParametrizedJob.__getitem__` with an unknown key (including a parameter
-  *name*, whose selector semantics were removed earlier) now raises `KeyError`
-  consistently with the `Mapping` protocol.
-- Dead code left over from removed plan-format features was deleted: `{param}`
-  placeholder substitution in dependencies and arg specs, `job_id_from_request`
-  hydration, grouped-literal selectors, and
-  `tidyrun.plan.resolve_ref_from_outputs`. Plans written by the current
-  `materialize()` never contained these constructs.
-
 ### Added
 
-- `DAG.execute_materialized` (and `evaluate`, `evaluate_in_subprocesses`) now
-  writes a `.tidyrun` metadata file for the outputs directory and for every
-  intermediate group folder in a nested DAG, using `encoding = "dict-folder"`
-  and a combined checksum computed via `checksum_for_named_children`. This makes
-  the on-disk layout of a DAG execution identical to what `serialize(dict, path)`
-  produces, so `deserialize` returns a `LazyDict` with the correct checksum at
-  every level. The metadata files are written by lightweight synthetic aggregator
-  jobs that are injected into the dependency graph and run inline (no subprocess)
-  after their children complete; they are skipped when `skip_completed=True` and
-  the metadata already exists.
-- `load_inputs_and_callable(dag_path, job_id)` helper: returns `(callable, inputs)`
-  for a materialised job ready to call, combining `load_callable` and `load_job_inputs`.
-  Exported from the top-level `tidyrun` package.
+- DAG execution now writes `.tidyrun` metadata for nested output folders, so
+  executed DAG outputs deserialize consistently as `LazyDict` values (matching
+  `serialize(dict, path)` layout).
+- Added `load_inputs_and_callable(dag_path, job_id)` and exported it from the
+  top-level package to simplify rerun/debug flows.
 
 ### Changed
 
-- Documentation API reference sections for `serialize`, `deserialize`,
-  `LazyDict`, `DAG`, `Job`, `ParametrizedJob`, `encode_key`, and `decode_key`
-  are now auto-generated from docstrings via `mkdocstrings`, preventing
-  signature drift between source and docs.
-- **Self-contained plan layout**: `execute_materialized`, `evaluate`, and
-  `evaluate_in_subprocesses` no longer accept `output_path` or `target`
-  parameters. Outputs are always written to `dag_path/outputs/`, co-located
-  with the plan. This makes symlink-based dependency resolution always valid
-  and eliminates the need to pass a separate output path.
-- **Whole-group dependencies**: when a `ParametrizedJob` is used as a
-  dependency, the consumer receives the entire group output (a `LazyDict`) and
-  is responsible for slicing by parameter value (e.g. `dep[x]`). Per-instance
-  slicing via `pjob["param"]` is no longer supported and raises `KeyError`.
-- **Strict DAG membership**: every `Job` or `DAG` used as a dependency must be
-  registered as a top-level member of the same `DAG`. Anonymous deps that were
-  previously assigned synthetic `__job_N` identifiers now raise `ValueError`.
-- Dependency inputs are now represented as **symlinks** pointing to
-  `../../outputs/<dep_id>` on local filesystems; on S3 a small `.tidyrun`
-  sidecar records the dep output id instead. Symlinks are updated (re-linked)
-  on re-materialisation.
-- `rerun_snippet` now uses `load_inputs_and_callable` instead of the lower-level
-  `load_job_definition` / `load_job_inputs` pair.
-- `materialize` returns `Path | CloudPath` instead of `Path`; the S3 return
-  value is now a proper `S3Path` (via `AnyPath`) rather than a broken local
-  `Path("s3://…")`.
+- Internals were refactored (`dag`, `execute`, `plan`, `progress`) to remove
+  duplicated scheduling/plan-reading code and improve maintainability, without
+  changing the public API surface of `tidyrun.dag`.
+- `execute_materialized`, `evaluate`, and `evaluate_in_subprocesses` now always
+  write outputs to `dag_path/outputs/` (no separate `output_path`/`target`).
+- Dependency handling is stricter and clearer:
+  - `ParametrizedJob` dependencies pass the whole group output (`LazyDict`);
+    `pjob["param"]` selector-style access is no longer supported.
+  - Dependency jobs/DAGs must belong to the same top-level DAG; implicit
+    anonymous dependencies now raise `ValueError`.
+  - Unknown `ParametrizedJob.__getitem__` keys consistently raise `KeyError`.
+- Dependency inputs are represented as symlinks on local filesystems (with an
+  S3 sidecar equivalent), and relinked on re-materialization.
+- API docs for core symbols are now generated from docstrings via
+  `mkdocstrings`, reducing signature drift.
+- `materialize` now returns `Path | CloudPath`, including proper `S3Path`
+  behavior for S3 plans.
 
 ### Fixed
 
-- Fixed SLURM array jobs always reporting failure even when job outputs were written successfully.
-- Removed unnecessary duplicate jobs that were created in a DAG when a parametrized job had dependencies
-- Fixed failing jobs when a parametrized job depends on another parametrized job
+- Fixed SLURM array jobs incorrectly reporting failure even when outputs were
+  written successfully.
+- Removed duplicate jobs that could be created when parametrized jobs had
+  dependencies.
+- Fixed failures when a parametrized job depends on another parametrized job.
 - `LazyDict.concat` with `transform` and `names` no longer raises
   "Encountered LazyDict at depth N" when the leaf value is a plain `dict` (or
   any non-`LazyDict` mapping) that `transform` knows how to handle.
