@@ -12,7 +12,7 @@ from typing import Any, cast, Literal
 
 import toml
 
-from tidyrun.keys import decode_key, encode_key, Key
+from tidyrun.keys import decode_key, encode_key
 
 
 # ---------------------------------------------------------------------------
@@ -26,13 +26,6 @@ def to_path(value: Any) -> Path:
 
 def normalize_job_id(job_id: str) -> str:
     return job_id.replace('\\"', '"')
-
-
-def decode_manifest_key(encoded_key: str) -> Key:
-    try:
-        return decode_key(encoded_key)
-    except ValueError:
-        return decode_key(encoded_key.replace('\\"', '"'))
 
 
 def job_definition_file(definitions_path: Path, job_id: str) -> Path:
@@ -162,7 +155,7 @@ def load_job_definition(dag_path: Any, job_id: str) -> dict[str, Any]:
     definitions_dir = plan_dir / "definitions"
     definition_file = _find_definition_file(definitions_dir, normalized_job_id)
 
-    if definition_file is None or not definition_file.is_file():
+    if definition_file is None:
         raise ValueError(f"Missing job definition file for job {normalized_job_id!r}")
 
     definition = cast(
@@ -174,40 +167,6 @@ def load_job_definition(dag_path: Any, job_id: str) -> dict[str, Any]:
     if "parameter_names" in definition:
         rel = definition_file.relative_to(definitions_dir).with_suffix("")
         definition["array_group"] = rel.as_posix()
-
-    placeholder_values: dict[str, str] = {}
-    if "parameter_names" in definition:
-        for parameter_name in cast(list[str], definition.get("parameter_names", [])):
-            placeholder_values[f"{{{parameter_name}}}"] = encode_key(
-                _resolve_parameter_value(parameter_name, normalized_job_id, definition)
-            )
-
-    def _substitute_dependency_placeholders(value: str) -> str:
-        resolved = value
-        for token, replacement in placeholder_values.items():
-            resolved = resolved.replace(token, replacement)
-        return resolved
-
-    def _hydrate_requested_job_id(value: Any) -> Any:
-        if isinstance(value, dict):
-            value_dict = cast(dict[str, Any], value)
-            hydrated: dict[str, Any] = {
-                key: _hydrate_requested_job_id(item) for key, item in value_dict.items()
-            }
-            if hydrated.get("job_id_from_request") is True:
-                hydrated.pop("job_id_from_request", None)
-                hydrated["job_id"] = normalized_job_id
-            raw_job_id = hydrated.get("job_id")
-            if isinstance(raw_job_id, str):
-                hydrated["job_id"] = _substitute_dependency_placeholders(raw_job_id)
-            return hydrated
-        if isinstance(value, list):
-            return [_hydrate_requested_job_id(item) for item in cast(list[Any], value)]
-        return value
-
-    args_payload = definition.get("args")
-    if isinstance(args_payload, dict):
-        definition["args"] = _hydrate_requested_job_id(args_payload)
 
     definition["job_id"] = normalized_job_id
     definition["_requested_job_id"] = normalized_job_id
@@ -270,56 +229,6 @@ def _resolve_parameter_value(
     return decode_key(key_segments[param_idx])
 
 
-def _substitute_placeholders_in_spec(spec: Any, param_bindings: dict[str, Any]) -> Any:
-    """Replace ``{param_name}`` tokens in arg specs using current parameter values.
-
-    Walks nested dicts and lists so that job_id strings like ``"produce/{x}"``
-    are expanded to concrete ids like ``"produce/1"`` before the spec is
-    passed to :func:`_resolve_arg`.
-    """
-    if isinstance(spec, str):
-        result = spec
-        for name, value in param_bindings.items():
-            result = result.replace(f"{{{name}}}", encode_key(value))
-        return result
-    if isinstance(spec, dict):
-        return {
-            k: _substitute_placeholders_in_spec(v, param_bindings)
-            for k, v in cast(dict[str, Any], spec).items()
-        }
-    if isinstance(spec, list):
-        return [
-            _substitute_placeholders_in_spec(item, param_bindings)
-            for item in cast(list[Any], spec)
-        ]
-    return spec
-
-
-def resolve_ref_from_outputs(outputs_path: Path, ref: Mapping[str, Any]) -> Any:
-    from tidyrun.serialization.api import deserialize
-
-    kind = ref.get("kind")
-    if kind == "job":
-        job_id = ref.get("job_id")
-        if not isinstance(job_id, str):
-            raise ValueError(f"Invalid job reference: {ref!r}")
-        return deserialize(job_output_base(outputs_path, normalize_job_id(job_id)))
-
-    if kind == "group":
-        raw_entries = ref.get("entries")
-        if not isinstance(raw_entries, dict):
-            raise ValueError(f"Invalid group reference: {ref!r}")
-        entries = cast(Mapping[str, Any], raw_entries)
-        return {
-            decode_manifest_key(encoded_key): resolve_ref_from_outputs(
-                outputs_path, cast(Mapping[str, Any], entry_ref)
-            )
-            for encoded_key, entry_ref in entries.items()
-        }
-
-    raise ValueError(f"Unknown reference kind: {kind!r}")
-
-
 def _resolve_arg(
     plan_dir: Path,
     spec: Mapping[str, Any],
@@ -335,48 +244,7 @@ def _resolve_arg(
         if not isinstance(raw_path, str):
             raise ValueError(f"Invalid literal arg spec: {spec!r}")
         p = Path(raw_path)
-        full_path = p if p.is_absolute() else plan_dir / p
-        value = deserialize(full_path)
-        literal_job_id = spec.get("job_id")
-        if spec.get("job_id_from_request") is True:
-            if requested_job_id is None:
-                raise ValueError(
-                    "Missing requested job id for grouped literal selector"
-                )
-            literal_job_id = requested_job_id
-        if literal_job_id is None:
-            return value
-        if not isinstance(literal_job_id, str):
-            raise ValueError(f"Invalid literal job_id in arg spec: {spec!r}")
-        if isinstance(value, Mapping):
-            if literal_job_id not in value:
-                raise ValueError(
-                    f"Missing grouped literal value for job_id {literal_job_id!r}"
-                )
-            return cast(Any, value[literal_job_id])
-        if isinstance(value, list):
-            typed_value = cast(list[object], value)
-            for item in typed_value:
-                if isinstance(item, tuple):
-                    pair = cast(tuple[object, ...], item)
-                    if len(pair) != 2:
-                        continue
-                    key, item_value = pair
-                elif isinstance(item, list):
-                    pair = cast(list[object], item)
-                    if len(pair) != 2:
-                        continue
-                    key, item_value = pair
-                else:
-                    continue
-                if isinstance(key, str) and key == literal_job_id:
-                    return item_value
-            raise ValueError(
-                f"Missing grouped literal value for job_id {literal_job_id!r}"
-            )
-        raise ValueError(
-            "Grouped literal expects a mapping or list payload keyed by job_id"
-        )
+        return deserialize(p if p.is_absolute() else plan_dir / p)
 
     if kind == "dependency":
         if arg_name is None or requested_job_id is None:
@@ -384,9 +252,9 @@ def _resolve_arg(
                 "arg_name and requested_job_id are required to resolve a dependency arg"
             )
         dep_path = plan_dir / "inputs" / requested_job_id / arg_name
-        if isinstance(dep_path, Path) and dep_path.is_symlink():
+        if dep_path.is_symlink():
             return deserialize(dep_path.resolve())
-        # Non-local (S3) or missing symlink: use sidecar written by _write_dep_symlink
+        # Non-local (S3) or missing symlink: use sidecar written by the compiler
         sidecar = plan_dir / "inputs" / requested_job_id / f"{arg_name}.tidyrun"
         dep_output_id = sidecar.read_text(encoding="utf-8").strip()
         return deserialize(plan_dir / "outputs" / dep_output_id)
@@ -415,16 +283,6 @@ def load_job_inputs(
     requested_job_id = job_definition.get("_requested_job_id")
     if requested_job_id is not None and not isinstance(requested_job_id, str):
         raise ValueError("Invalid _requested_job_id metadata in job definition")
-    # Build parameter bindings for {param_name} template expansion in dep specs.
-    param_bindings: dict[str, Any] = {}
-    if requested_job_id is not None:
-        for pname in cast(list[str], job_definition.get("parameter_names", [])):
-            try:
-                param_bindings[pname] = _resolve_parameter_value(
-                    pname, requested_job_id, job_definition
-                )
-            except (ValueError, KeyError):
-                pass
 
     resolved_inputs: dict[str, Any] = {}
     for name, raw_spec in typed_kwargs_table.items():
@@ -438,11 +296,6 @@ def load_job_inputs(
                 name, requested_job_id, job_definition
             )
         else:
-            if param_bindings:
-                spec = cast(
-                    Mapping[str, Any],
-                    _substitute_placeholders_in_spec(dict(spec), param_bindings),
-                )
             resolved_inputs[name] = _resolve_arg(
                 plan_dir,
                 spec,
@@ -472,44 +325,65 @@ def rerun_snippet(dag_path: Any, job_id: str) -> str:
     )
 
 
-def enumerate_job_ids_from_definitions(
-    definitions_dir: Path,
-) -> dict[str, str | None]:
-    """Scan definitions/ and return {job_id: array_group or None}."""
-    result: dict[str, str | None] = {}
+@dataclass
+class PlanGraph:
+    """Dependency graph of a materialized plan, derived from ``definitions/``.
+
+    One entry per runnable job.  A parametrized definition file (an "array
+    group") expands to one job per parameter-value tuple; those jobs are also
+    indexed by their group so executors can submit them as job arrays.
+    """
+
+    #: job_id -> ids of the jobs it depends on
+    dependencies: dict[str, set[str]]
+    #: job_id -> array group id, for jobs that belong to a parametrized group
+    array_group_by_job_id: dict[str, str]
+    #: array group id -> all job_ids in the group
+    array_groups: dict[str, set[str]]
+
+
+def read_plan_graph(definitions_dir: Path) -> PlanGraph:
+    """Scan ``definitions/`` and build the job dependency graph."""
+    graph = PlanGraph(dependencies={}, array_group_by_job_id={}, array_groups={})
     if not definitions_dir.is_dir():
-        return result
+        return graph
     for def_file in sorted(definitions_dir.rglob("*.tidyrun")):
         definition = cast(
             dict[str, Any],
             toml.loads(def_file.read_text(encoding="utf-8")),  # pyright: ignore[reportUnknownMemberType]
         )
-        parameter_names = list(definition.get("parameter_names", []))
-        if parameter_names:
-            array_group = str(
-                def_file.relative_to(definitions_dir).with_suffix("").as_posix()
-            )
-            args = cast(dict[str, Any], definition.get("args", {}))
-            per_param_values: list[list[Any]] = []
-            for pname in parameter_names:
-                arg_spec = cast(Mapping[str, Any], args.get(pname, {}))
-                per_param_values.append(list(arg_spec.get("values", [])))
-            if per_param_values:
-                n_instances = len(per_param_values[0])
-                for i in range(n_instances):
-                    encoded_values = "/".join(
-                        encode_key(per_param_values[p][i])
-                        for p in range(len(parameter_names))
-                    )
-                    job_id = array_group + "/" + encoded_values
-                    result[job_id] = array_group
-            else:
-                result[array_group] = array_group
-        else:
-            rel = def_file.relative_to(definitions_dir).with_suffix("")
-            job_id = normalize_job_id(rel.as_posix())
-            result[job_id] = None
-    return result
+        deps = {
+            normalize_job_id(dep)
+            for dep in cast(list[str], definition.get("dependencies", []))
+        }
+        # The job (or array group) id is the definition file path itself.
+        group_id = def_file.relative_to(definitions_dir).with_suffix("").as_posix()
+        parameter_names = cast(list[str], definition.get("parameter_names", []))
+        if not parameter_names:
+            graph.dependencies[normalize_job_id(group_id)] = deps
+            continue
+
+        args = cast(dict[str, Any], definition.get("args", {}))
+        per_param_values = [
+            list(cast(Mapping[str, Any], args.get(name, {})).get("values", []))
+            for name in parameter_names
+        ]
+        for row in zip(*per_param_values):
+            job_id = "/".join([group_id, *(encode_key(value) for value in row)])
+            graph.dependencies[job_id] = set(deps)
+            graph.array_group_by_job_id[job_id] = group_id
+            graph.array_groups.setdefault(group_id, set()).add(job_id)
+    return graph
+
+
+def enumerate_job_ids_from_definitions(
+    definitions_dir: Path,
+) -> dict[str, str | None]:
+    """Scan definitions/ and return {job_id: array_group or None}."""
+    graph = read_plan_graph(definitions_dir)
+    return {
+        job_id: graph.array_group_by_job_id.get(job_id) for job_id in graph.dependencies
+    }
 
 
 def get_job_states(

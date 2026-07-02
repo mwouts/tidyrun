@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [project.scripts]
-tidyrun-batch-entrypoint = "tidyrun.dag:batch_entrypoint"
+tidyrun-batch-entrypoint = "tidyrun.execute:batch_entrypoint"
 
 [project.optional-dependencies]
 test = [
