@@ -408,6 +408,7 @@ def test_job_dependency_runs_after_inputs_ready(tmp_path: Path) -> None:
 
     dag = DAG({"producer": producer, "result": consumer})
     plan_dir = dag.materialize(tmp_path / "plan")
+    assert isinstance(plan_dir, Path)
 
     # Dependency arg is exposed as a symlink in inputs/; no sidecar
     sym = plan_dir / "inputs" / "result" / "x"
@@ -614,6 +615,7 @@ def test_parametrized_job_dependency_through_same_parameter_no_extra_job(
     dag = DAG({"produce": pjob_produce, "consume": pjob_consume})
 
     plan_dir = dag.materialize(tmp_path / "plan")
+    assert isinstance(plan_dir, Path)
 
     # Each consumer instance has a symlink to the group root (whole produce group)
     for v in values:
@@ -655,6 +657,7 @@ def test_parametrized_job_dependency_by_parameter_name_selector(
 
     dag = DAG({"produce": producer, "consume": consumer})
     plan_dir = dag.materialize(tmp_path / "plan")
+    assert isinstance(plan_dir, Path)
 
     definition_names = {
         str(f.relative_to(plan_dir / "definitions").with_suffix("").as_posix())
@@ -711,6 +714,7 @@ def test_parametrized_job_dep_whole_pjob_as_kwarg(
         dag["produce"] = producer
 
     plan_dir = dag.materialize(tmp_path / "plan")
+    assert isinstance(plan_dir, Path)
 
     definition_names = {
         str(f.relative_to(plan_dir / "definitions").with_suffix("").as_posix())
@@ -899,6 +903,7 @@ def test_materialized_plan_content(tmp_path: Path) -> None:
 
     dag = DAG({"producer": producer, "group": group, "consumer": consumer})
     plan_dir = dag.materialize(tmp_path / "plan")
+    assert isinstance(plan_dir, Path)
 
     # --- definition files exist ---
     assert (plan_dir / "definitions" / "producer.tidyrun").is_file()

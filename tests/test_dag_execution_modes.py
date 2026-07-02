@@ -173,8 +173,8 @@ def test_thread_mode_is_faster_than_subprocess_for_small_jobs(tmp_path: Path) ->
 def test_parallel_execution_with_thread_mode(tmp_path: Path) -> None:
     """Test that thread mode can parallelize job execution with max_workers."""
     jobs: dict[Key, Job] = {
-        f"job_{i}": Job(func=_slow_job, kwargs={"delay_seconds": 0.05})
-        for i in range(4)
+        f"job_{i}": Job(func=_slow_job, kwargs={"delay_seconds": 0.15})
+        for i in range(8)
     }
     dag = DAG(jobs)
 
@@ -195,9 +195,9 @@ def test_parallel_execution_with_thread_mode(tmp_path: Path) -> None:
     )
     par_time = time.time() - start_par
 
-    # Parallel should be faster (roughly 2x for 4 jobs with 2 workers)
-    # seq_time should be ~0.2s (4 jobs * 0.05s), par_time should be ~0.1s
-    assert par_time < seq_time, (
-        f"Parallel thread execution ({par_time:.2f}s) should be faster than "
-        f"sequential ({seq_time:.2f}s)"
+    # Use a larger workload and require a meaningful improvement to reduce
+    # timing flakiness on shared/loaded CI runners.
+    assert par_time <= seq_time * 0.9, (
+        f"Parallel thread execution ({par_time:.2f}s) should be at least 10% "
+        f"faster than sequential ({seq_time:.2f}s)"
     )

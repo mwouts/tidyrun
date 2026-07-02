@@ -79,6 +79,7 @@ def test_job_rerun_snippet_and_public_runner(tmp_path: Path) -> None:
     job = Job(func=_const_two, kwargs={})
     dag = DAG({"producer": job})
     plan_dir = dag.materialize(tmp_path / "plan")
+    assert isinstance(plan_dir, Path)
 
     snippet = job.rerun_snippet(dag_path=plan_dir, job_id="producer")
     assert "load_inputs_and_callable" in snippet

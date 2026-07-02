@@ -382,6 +382,8 @@ def test_lazy_dict_concat_parallel_select(tmp_path: Path) -> None:
 def test_lazy_dict_concat_transform_picks_dict_element(tmp_path: Path) -> None:
     """concat with names=["run"] and transform=lambda x: x["accuracy"] should work
     when each value is a plain dict (not a nested LazyDict)."""
+    pytest.importorskip("pandas")
+
     value = {
         "run1": {"accuracy": 0.9, "loss": 0.1},
         "run2": {"accuracy": 0.8, "loss": 0.2},
