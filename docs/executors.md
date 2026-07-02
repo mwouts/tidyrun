@@ -20,12 +20,10 @@ an external executor:
 
 ```python
 # Fast local test run
-result = dag.execute_materialized(dag_path=plan_dir, output_path=out,
-                                   execution_mode="thread", max_workers=4)
+result = dag.execute_materialized(plan_dir, execution_mode="thread", max_workers=4)
 
 # Production subprocess run
-result = dag.execute_materialized(dag_path=plan_dir, output_path=out,
-                                   execution_mode="subprocess", max_workers=8)
+result = dag.execute_materialized(plan_dir, execution_mode="subprocess", max_workers=8)
 ```
 
 ---

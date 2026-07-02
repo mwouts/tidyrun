@@ -2,6 +2,47 @@
 
 All notable changes to TidyRun are documented in this file.
 
+## [0.0.7] — (2026-07-02)
+
+### Added
+
+- DAG execution now writes `.tidyrun` metadata for nested output folders, so
+  executed DAG outputs deserialize consistently as `LazyDict` values (matching
+  `serialize(dict, path)` layout).
+- Added `load_inputs_and_callable(dag_path, job_id)` and exported it from the
+  top-level package to simplify rerun/debug flows.
+
+### Changed
+
+- Internals were refactored (`dag`, `execute`, `plan`, `progress`) to remove
+  duplicated scheduling/plan-reading code and improve maintainability, without
+  changing the public API surface of `tidyrun.dag`.
+- `execute_materialized`, `evaluate`, and `evaluate_in_subprocesses` now always
+  write outputs to `dag_path/outputs/` (no separate `output_path`/`target`).
+- Dependency handling is stricter and clearer:
+  - `ParametrizedJob` dependencies pass the whole group output (`LazyDict`);
+    `pjob["param"]` selector-style access is no longer supported.
+  - Dependency jobs/DAGs must belong to the same top-level DAG; implicit
+    anonymous dependencies now raise `ValueError`.
+  - Unknown `ParametrizedJob.__getitem__` keys consistently raise `KeyError`.
+- Dependency inputs are represented as symlinks on local filesystems (with an
+  S3 sidecar equivalent), and relinked on re-materialization.
+- API docs for core symbols are now generated from docstrings via
+  `mkdocstrings`, reducing signature drift.
+- `materialize` now returns `Path | CloudPath`, including proper `S3Path`
+  behavior for S3 plans.
+
+### Fixed
+
+- Fixed SLURM array jobs incorrectly reporting failure even when outputs were
+  written successfully.
+- Removed duplicate jobs that could be created when parametrized jobs had
+  dependencies.
+- Fixed failures when a parametrized job depends on another parametrized job.
+- `LazyDict.concat` with `transform` and `names` no longer raises
+  "Encountered LazyDict at depth N" when the leaf value is a plain `dict` (or
+  any non-`LazyDict` mapping) that `transform` knows how to handle.
+
 ## [0.0.6] — (2026-06-02)
 
 ### Added

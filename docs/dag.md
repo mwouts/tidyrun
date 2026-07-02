@@ -346,3 +346,26 @@ print(outputs["summary"])                 # summary=ok
     job later via `run_materialized_job(plan_dir, job_id)`.
 - `job_resources` is keyed by top-level DAG keys and is only applied when the
     executor implements `submit_with_options(...)`.
+
+## API Reference
+
+::: tidyrun.job.Job
+    options:
+      show_root_heading: true
+      heading_level: 3
+
+::: tidyrun.dag.ParametrizedJob
+    options:
+      show_root_heading: true
+      heading_level: 3
+      members: []
+
+::: tidyrun.dag.DAG
+    options:
+      show_root_heading: true
+      heading_level: 3
+      members:
+        - materialize
+        - execute_materialized
+        - evaluate
+        - clear_outputs

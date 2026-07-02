@@ -87,11 +87,7 @@ def test_parametrized_job_execute_materialized(tmp_path: Path) -> None:
         kwargs={"sep": ":"},
     )
     plan_dir = pjob.materialize(tmp_path / "plan")
-    result = pjob.execute_materialized(
-        dag_path=plan_dir,
-        output_path=tmp_path / "out",
-        execution_mode="thread",
-    )
+    result = pjob.execute_materialized(plan_dir, execution_mode="thread")
 
     # No extra wrapper level
     assert result.to_dict() == {
@@ -127,11 +123,7 @@ def test_dag_execution_error_includes_job_traceback(tmp_path: Path) -> None:
     dag.materialize(plan_dir)
 
     with pytest.raises(DAGExecutionError) as exc_info:
-        dag.execute_materialized(
-            dag_path=plan_dir,
-            output_path=tmp_path / "out",
-            execution_mode="subprocess",
-        )
+        dag.execute_materialized(plan_dir, execution_mode="subprocess")
 
     err = exc_info.value
     assert err.plan_dir == plan_dir
@@ -153,15 +145,11 @@ def test_dag_execution_error_includes_rerun_snippet(tmp_path: Path) -> None:
     dag.materialize(plan_dir)
 
     with pytest.raises(DAGExecutionError) as exc_info:
-        dag.execute_materialized(
-            dag_path=plan_dir,
-            output_path=tmp_path / "out",
-            execution_mode="subprocess",
-        )
+        dag.execute_materialized(plan_dir, execution_mode="subprocess")
 
     msg = str(exc_info.value)
     assert "To re-run this job interactively:" in msg
-    assert "load_job_definition" in msg
+    assert "load_inputs_and_callable" in msg
     assert "bad" in msg
 
 
@@ -171,11 +159,7 @@ def test_dag_execution_error_rerun_snippet_method(tmp_path: Path) -> None:
     dag.materialize(plan_dir)
 
     with pytest.raises(DAGExecutionError) as exc_info:
-        dag.execute_materialized(
-            dag_path=plan_dir,
-            output_path=tmp_path / "out",
-            execution_mode="subprocess",
-        )
+        dag.execute_materialized(plan_dir, execution_mode="subprocess")
 
     err = exc_info.value
     snippet = err.rerun_snippet()
@@ -282,7 +266,7 @@ def test_materialize_progress_total_matches_step_count(tmp_path: Path) -> None:
 
 
 def test_execute_materialized_writes_directly_to_output_path(tmp_path: Path) -> None:
-    """Jobs should write outputs directly to output_path — no post-processing step."""
+    """Jobs should write outputs directly to plan_dir/outputs — no post-processing step."""
     dag = DAG(
         {
             "a": Job(func=_const, kwargs={"x": 1}),
@@ -290,21 +274,20 @@ def test_execute_materialized_writes_directly_to_output_path(tmp_path: Path) -> 
         }
     )
     plan_dir = tmp_path / "plan"
-    out_dir = tmp_path / "out"
     dag.materialize(plan_dir)
-    result = dag.execute_materialized(
-        dag_path=plan_dir,
-        output_path=out_dir,
-        execution_mode="thread",
-    )
+    result = dag.execute_materialized(plan_dir, execution_mode="thread")
 
     assert result.to_dict() == {"a": 1, "b": 2}
 
-    # Outputs should be written directly under out_dir — no intermediate copy.
     from tidyrun.plan import job_output_exists
 
-    assert job_output_exists(out_dir, "a"), "Job 'a' output should be at out_dir/a"
-    assert job_output_exists(out_dir, "b"), "Job 'b' output should be at out_dir/b"
+    out_dir = plan_dir / "outputs"
+    assert job_output_exists(out_dir, "a"), (
+        "Job 'a' output should be at plan_dir/outputs/a"
+    )
+    assert job_output_exists(out_dir, "b"), (
+        "Job 'b' output should be at plan_dir/outputs/b"
+    )
 
 
 def test_mixed_dag_result_navigable_via_lazy_dict(tmp_path: Path) -> None:
@@ -324,13 +307,8 @@ def test_mixed_dag_result_navigable_via_lazy_dict(tmp_path: Path) -> None:
         }
     )
     plan_dir = tmp_path / "plan"
-    out_dir = tmp_path / "out"
     dag.materialize(plan_dir)
-    result = dag.execute_materialized(
-        dag_path=plan_dir,
-        output_path=out_dir,
-        execution_mode="thread",
-    )
+    result = dag.execute_materialized(plan_dir, execution_mode="thread")
 
     assert result["single"] == 42
     assert result.to_dict() == {
@@ -349,13 +327,8 @@ def test_parametrized_job_result_tree_is_accessible(tmp_path: Path) -> None:
     )
     dag = DAG({"pairs": pjob})
     plan_dir = tmp_path / "plan"
-    out_dir = tmp_path / "out"
     dag.materialize(plan_dir)
-    result = dag.execute_materialized(
-        dag_path=plan_dir,
-        output_path=out_dir,
-        execution_mode="thread",
-    )
+    result = dag.execute_materialized(plan_dir, execution_mode="thread")
 
     assert result.to_dict() == {
         "pairs": {
@@ -366,7 +339,7 @@ def test_parametrized_job_result_tree_is_accessible(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Issue #5 — dependency job IDs no longer fall back to __job_N
+# Issue #5 — dependency not in DAG raises a clear error
 # ---------------------------------------------------------------------------
 
 
@@ -374,8 +347,8 @@ def _identity(x: int) -> int:
     return x
 
 
-def test_shared_dependency_job_id_is_not_synthetic(tmp_path: Path) -> None:
-    """A shared dependency Job used by an array job must NOT get a __job_N id."""
+def test_dependency_not_in_dag_raises_error(tmp_path: Path) -> None:
+    """A dependency Job that is not a member of the DAG must raise ValueError."""
     shared = Job(func=_identity, kwargs={"x": 10})
 
     def _use_dep(dep: int, tag: str) -> str:
@@ -388,17 +361,8 @@ def test_shared_dependency_job_id_is_not_synthetic(tmp_path: Path) -> None:
         kwargs={"dep": shared},
     )
     dag = DAG({"result": pjob})
-    plan_dir = dag.materialize(tmp_path / "plan")
-
-    definitions_dir = plan_dir / "definitions"
-    # Scan all definition file names
-    def_names = [f.stem for f in definitions_dir.rglob("*.tidyrun")]
-    # None of them should look like the synthetic __job_N pattern
-    for name in def_names:
-        assert not name.startswith("__job_"), (
-            f"Synthetic job ID found: {name!r}. "
-            "Dependency job IDs should be derived from the DAG path."
-        )
+    with pytest.raises(ValueError, match="not a member of this DAG"):
+        dag.materialize(tmp_path / "plan")
 
 
 # ---------------------------------------------------------------------------

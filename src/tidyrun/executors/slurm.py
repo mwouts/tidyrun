@@ -42,6 +42,9 @@ def main() -> int:
                 raise RuntimeError(
                     f"Array index out of bounds: {index} not in [0, {len(calls)})"
                 )
+            # SLURM only expands %a in --output, not in script arguments.
+            result_path = result_path.replace("%a", index_text)
+            error_path = error_path.replace("%a", index_text)
             call = calls[index]
             if not isinstance(call, tuple) or len(call) != 3:
                 raise RuntimeError("Invalid array call payload")
