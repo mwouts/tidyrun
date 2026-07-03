@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import inspect
 from pathlib import Path
 from typing import Any
@@ -90,6 +90,13 @@ class Job:
 
     func: Callable[..., Any]
     kwargs: Mapping[str, Operand]
+    #: Provenance ``(parent, key)`` set by ``ParametrizedJob.__getitem__`` when
+    #: this job is a subset of a parametrized job. The plan compiler uses it to
+    #: resolve dependencies on subsets of DAG members, whose object identity
+    #: differs from the registered member's.
+    _derived_from: tuple[Any, Any] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         validate_callable_bindings(

@@ -2,6 +2,21 @@
 
 All notable changes to TidyRun are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Fixed a 0.0.7 regression where passing a subset of a member
+  `ParametrizedJob` (e.g. `pjob[key]`, or `dag["grid"][key]`) as a job
+  dependency raised "depends on a Job or DAG that is not a member of this
+  DAG". Subsets — whether a smaller `ParametrizedJob` or a single job
+  instance — are now resolved to the member's already-compiled jobs, with the
+  dependency input linked to the corresponding output subfolder (or single
+  job output). Genuinely unregistered jobs still raise the same error.
+- Jobs and parametrized jobs registered inside nested DAG members can now be
+  referenced as dependencies; previously only top-level members were
+  recognized.
+
 ## [0.0.7] — (2026-07-02)
 
 ### Added

@@ -233,10 +233,23 @@ class _PlanCompiler:
         # Register all members first so forward dependencies resolve no matter
         # the insertion order of the DAG.
         for key, node in nodes.items():
-            self._member_paths[id(node)] = (*prefix_tuple, key)
+            self._register_member((*prefix_tuple, key), node)
         for key, node in nodes.items():
             self._compile_node(node, (*prefix_tuple, key), None, None)
         self._patch_parameter_values()
+
+    def _register_member(self, path: tuple[Key, ...], node: Node) -> None:
+        """Record the canonical key path of *node* and of its nested sub-nodes.
+
+        ParametrizedJob children are not walked: ``__getitem__`` creates fresh
+        (ephemeral) objects, so registering their ids would be meaningless and
+        id reuse after garbage collection could produce false matches. Subsets
+        of parametrized jobs are resolved through ``_derived_from`` instead.
+        """
+        self._member_paths.setdefault(id(node), path)
+        if isinstance(node, DAG) and not isinstance(node, ParametrizedJob):
+            for key, subnode in node.items():
+                self._register_member((*path, key), subnode)
 
     # -- node compilation ----------------------------------------------------
 
@@ -331,21 +344,22 @@ class _PlanCompiler:
         group_parameter_names: tuple[str, ...] | None,
     ) -> dict[str, Any]:
         if isinstance(value, (Job, DAG)):
-            member_path = self._member_paths.get(id(value))
-            if member_path is None:
+            resolved = self._resolve_dependency(value)
+            if resolved is None:
                 raise ValueError(
                     f"Argument {arg_name!r} of job {owner_job_id!r} depends on a "
                     "Job or DAG that is not a member of this DAG. "
                     "Register it as a DAG member before using it as a dependency."
                 )
-            ref = self._compile_node(value, member_path, None, None)
+            dep_path, ref = resolved
 
             if ref.get("kind") == "job":
                 self._write_dep_link(owner_job_id, arg_name, cast(str, ref["job_id"]))
             elif isinstance(value, ParametrizedJob):
-                # Whole-group dependency: link to the group's output folder.
+                # Group dependency (whole group or a subset of one): link to
+                # the corresponding output folder.
                 self._write_dep_link(
-                    owner_job_id, arg_name, _job_id_from_path(member_path)
+                    owner_job_id, arg_name, _job_id_from_path(dep_path)
                 )
 
             return {"kind": "dependency", "ref": ref}
@@ -372,6 +386,49 @@ class _PlanCompiler:
             "kind": "literal",
             "path": self._serialize_literal(Path(owner_job_id), arg_name, value),
         }
+
+    def _resolve_dependency(
+        self, value: Node
+    ) -> tuple[tuple[Key, ...], dict[str, Any]] | None:
+        """Resolve a dependency operand to its (key path, compiled ref).
+
+        A dependency is either a DAG member itself (matched by object
+        identity) or a subset of a member ParametrizedJob. Subsets are fresh
+        objects created by ``__getitem__``, so identity lookup fails for them;
+        instead, walk the ``_derived_from`` provenance chain up to a registered
+        member, compile that member, and navigate its group ref back down the
+        subset keys. This references the member's already-compiled jobs rather
+        than compiling the subset as a new (duplicate) group.
+        """
+        member_path = self._member_paths.get(id(value))
+        if member_path is not None:
+            return member_path, self._compile_node(value, member_path, None, None)
+
+        keys: list[Key] = []
+        node: Any = value
+        while True:
+            derived = getattr(node, "_derived_from", None)
+            if derived is None:
+                return None
+            parent, key = derived
+            keys.append(key)
+            node = parent
+            member_path = self._member_paths.get(id(node))
+            if member_path is not None:
+                break
+
+        ref = self._compile_node(node, member_path, None, None)
+        for key in reversed(keys):
+            raw_entries = ref.get("entries")
+            if not isinstance(raw_entries, dict):
+                return None
+            entries = cast("dict[str, dict[str, Any]]", raw_entries)
+            subref = entries.get(_encode_key_checked(key))
+            if subref is None:
+                return None
+            ref = subref
+            member_path = (*member_path, key)
+        return member_path, ref
 
     def _serialize_literal(self, owner_dir: Path, arg_name: str, value: Any) -> str:
         from tidyrun.serialization.api import serialize
@@ -909,6 +966,9 @@ class ParametrizedJob(DAG):
     parameter_names: tuple[str, ...]
     parameter_values: tuple[tuple[Key, ...], ...]
     kwargs: Mapping[str, Any]
+    #: Provenance ``(parent, key)`` when this node is a subset of another
+    #: ParametrizedJob; see :attr:`tidyrun.job.Job._derived_from`.
+    _derived_from: tuple["ParametrizedJob", Key] | None = None
 
     def __init__(
         self,
@@ -939,14 +999,18 @@ class ParametrizedJob(DAG):
         bound_kwargs = dict(self.kwargs)
         bound_kwargs[parameter_name] = key
 
+        child: Job | ParametrizedJob
         if len(self.parameter_names) == 1:
-            return Job(func=self.func, kwargs=bound_kwargs)
-        return ParametrizedJob(
-            func=self.func,
-            parameter_names=self.parameter_names[1:],
-            parameter_values=[values[1:] for values in matching],
-            kwargs=bound_kwargs,
-        )
+            child = Job(func=self.func, kwargs=bound_kwargs)
+        else:
+            child = ParametrizedJob(
+                func=self.func,
+                parameter_names=self.parameter_names[1:],
+                parameter_values=[values[1:] for values in matching],
+                kwargs=bound_kwargs,
+            )
+        child._derived_from = (self, key)
+        return child
 
     def __iter__(self) -> Iterator[Key]:
         seen: set[Key] = set()

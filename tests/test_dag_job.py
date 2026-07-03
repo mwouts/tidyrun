@@ -592,7 +592,7 @@ def test_execute_plan(tmp_path: Path) -> None:
 def test_parametrized_job_dependency_through_same_parameter_no_extra_job(
     tmp_path: Path,
 ) -> None:
-    """Passing pjob[v] (per-instance) as dep is now an error; whole-group is required."""
+    """Passing the whole group as dep creates no extra job for the consumer."""
 
     def produce(x: int) -> int:
         return x * 2
@@ -735,6 +735,93 @@ def test_parametrized_job_dep_whole_pjob_as_kwarg(
     assert set(result_dict["consume"].keys()) == set(values)
     for v in values:
         assert result_dict["consume"][v] == v * 3
+
+
+def _produce_ab(a: int, b: int) -> int:
+    return a * 10 + b
+
+
+def _sum_values(dep: Any) -> int:
+    return sum(dep[k] for k in dep)
+
+
+def _add_one(dep: int) -> int:
+    return dep + 1
+
+
+def test_parametrized_job_subset_as_dependency(tmp_path: Path) -> None:
+    """A subset of a member ParametrizedJob (pjob[key]) is a valid dependency.
+
+    pjob[key] creates a fresh object, so the compiler resolves it through its
+    provenance rather than object identity, and must not write a duplicate
+    definition file for the subset.
+    """
+    pjob = ParametrizedJob(
+        func=_produce_ab,
+        parameter_names=["a", "b"],
+        parameter_values=[(1, 1), (1, 2), (2, 1)],
+    )
+    dag = DAG({"grid": pjob})
+    grid = dag["grid"]
+    assert isinstance(grid, ParametrizedJob)
+    # Group subset: fixes a=1, still a ParametrizedJob over b.
+    dag["agg"] = Job(func=_sum_values, kwargs={"dep": grid[1]})
+    # Single-instance subset: fixes both parameters, a plain Job.
+    instance = pjob[2]
+    assert isinstance(instance, ParametrizedJob)
+    dag["one"] = Job(func=_add_one, kwargs={"dep": instance[1]})
+
+    plan_dir = dag.materialize(tmp_path / "plan")
+    assert isinstance(plan_dir, Path)
+
+    definition_names = {
+        str(f.relative_to(plan_dir / "definitions").with_suffix("").as_posix())
+        for f in (plan_dir / "definitions").rglob("*.tidyrun")
+    }
+    assert definition_names == {"grid", "agg", "one"}
+
+    agg_link = plan_dir / "inputs" / "agg" / "dep"
+    assert agg_link.is_symlink()
+    assert agg_link.resolve() == (plan_dir / "outputs" / "grid" / "1").resolve()
+    one_link = plan_dir / "inputs" / "one" / "dep"
+    assert one_link.is_symlink()
+    assert one_link.resolve() == (plan_dir / "outputs" / "grid" / "2" / "1").resolve()
+
+    agg_def = load_job_definition(plan_dir, "agg")
+    assert set(agg_def["dependencies"]) == {"grid/1/1", "grid/1/2"}
+    one_def = load_job_definition(plan_dir, "one")
+    assert set(one_def["dependencies"]) == {"grid/2/1"}
+
+    result = dag.evaluate(plan_dir)
+    result_dict = result.to_dict()
+    assert result_dict["agg"] == 11 + 12
+    assert result_dict["one"] == 21 + 1
+
+
+def test_parametrized_job_subset_dependency_in_nested_dag(tmp_path: Path) -> None:
+    """Subsets resolve for parametrized jobs registered inside nested DAGs."""
+    pjob = ParametrizedJob(
+        func=_produce_ab,
+        parameter_names=["a", "b"],
+        parameter_values=[(1, 1), (1, 2)],
+    )
+    dag = DAG({"sub": DAG({"grid": pjob})})
+    dag["agg"] = Job(func=_sum_values, kwargs={"dep": pjob[1]})
+
+    result = dag.evaluate(tmp_path / "plan")
+    assert result.to_dict()["agg"] == 11 + 12
+
+
+def test_parametrized_job_subset_of_non_member_raises(tmp_path: Path) -> None:
+    """A subset of a ParametrizedJob that is not a DAG member is still an error."""
+    orphan = ParametrizedJob(
+        func=_produce_ab,
+        parameter_names=["a", "b"],
+        parameter_values=[(1, 1)],
+    )
+    dag = DAG({"agg": Job(func=_sum_values, kwargs={"dep": orphan[1]})})
+    with pytest.raises(ValueError, match="not a member of this DAG"):
+        dag.materialize(tmp_path / "plan")
 
 
 def test_get_job_states(tmp_path: Path) -> None:
