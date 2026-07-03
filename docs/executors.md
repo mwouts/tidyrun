@@ -243,6 +243,42 @@ CMD ["tidyrun-batch-entrypoint"]
     ``Missing job definition file for job ...`` when ``TIDYRUN_PLAN_DIR`` is
     an ``s3://`` URI, because the runner interpreted the URI as a local path.
 
+    Each plan records the tidyrun version that wrote it (``plan.toml`` at the
+    plan root), and the runner logs a warning when its own version differs.
+
+### Using a development version of tidyrun
+
+When the submitting machine runs an unreleased tidyrun (a git checkout or
+branch), the container must run that same version. Two ways to do it:
+
+1. **Bake it into the image** — install tidyrun from your git ref instead of
+   PyPI:
+
+    ```dockerfile
+    RUN pip install "tidyrun[s3] @ git+https://github.com/my-org/tidyrun@my-branch"
+    ```
+
+2. **Keep a generic image and bootstrap at runtime** — pass a pip
+   requirement through ``TIDYRUN_PIP_SPEC``. The entrypoint installs it and
+   re-executes itself before running the job, so every container picks up
+   your development version without rebuilding the image:
+
+    ```python
+    executor = AwsBatchExecutor(
+        job_queue="my-research-queue",
+        job_definition="my-research-base:3",
+        extra_env={
+            "TIDYRUN_PIP_SPEC": "tidyrun[s3] @ git+https://github.com/my-org/tidyrun@my-branch",
+        },
+    )
+    ```
+
+    Any pip requirement works — a git URL with a branch or commit, a version
+    pin like ``tidyrun[s3]==0.0.8``, or an S3-downloaded wheel path if your
+    image fetches one. Runtime installs add a few seconds per container and
+    require network access to the package source; prefer baking the image
+    once your version stabilizes.
+
 ### Deploying a local git repository
 
 A common research workflow is to run experiments against a specific commit of

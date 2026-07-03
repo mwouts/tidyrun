@@ -132,6 +132,34 @@ class DAGExecutionError(Exception):
 # Job runners
 # ---------------------------------------------------------------------------
 
+#: Plan roots already checked for a version mismatch in this process.
+_version_checked_plan_dirs: set[str] = set()
+
+
+def _warn_on_version_mismatch(plan_dir: Path | CloudPath) -> None:
+    """Warn (once per plan and process) when this runner's tidyrun version
+    differs from the one that materialized the plan."""
+    key = str(plan_dir)
+    if key in _version_checked_plan_dirs:
+        return
+    _version_checked_plan_dirs.add(key)
+
+    from tidyrun import __version__
+    from tidyrun.plan import read_plan_info
+
+    try:
+        written_by = read_plan_info(plan_dir).get("tidyrun_version")
+    except Exception:
+        return
+    if isinstance(written_by, str) and written_by != __version__:
+        print(
+            f"Warning: plan {key} was materialized with tidyrun {written_by}, "
+            f"but this runner uses tidyrun {__version__}. If jobs fail to "
+            "load, install the matching tidyrun version in this environment "
+            "(for AWS Batch, see TIDYRUN_PIP_SPEC).",
+            file=sys.stderr,
+        )
+
 
 def _run_compiled_job(plan_paths: PlanPaths, job_id: str) -> None:
     import datetime
@@ -140,6 +168,7 @@ def _run_compiled_job(plan_paths: PlanPaths, job_id: str) -> None:
     from tidyrun.serialization.api import serialize
 
     plan_dir = plan_paths.definitions.parent
+    _warn_on_version_mismatch(plan_dir)
     definition = load_job_definition(plan_dir, job_id)
     inputs = load_job_inputs(definition, plan_dir)
     func = load_callable(definition)
@@ -182,6 +211,40 @@ def run_materialized_job(dag_path: Any, job_id: str) -> None:
     _run_compiled_job(PlanPaths.from_runner_string(str(dag_path)), job_id)
 
 
+def _maybe_install_pip_spec() -> None:
+    """Install the tidyrun requested via ``TIDYRUN_PIP_SPEC``, then re-exec.
+
+    This lets a generic container image run the exact tidyrun version used by
+    the submitting machine — including unreleased development versions — by
+    passing e.g.
+    ``extra_env={"TIDYRUN_PIP_SPEC": "tidyrun[s3] @ git+https://github.com/my-org/tidyrun@my-branch"}``
+    to :class:`~tidyrun.AwsBatchExecutor`. The current process is replaced
+    after the install so the freshly installed version is imported cleanly.
+    """
+    pip_spec = os.environ.get("TIDYRUN_PIP_SPEC")
+    if not pip_spec or os.environ.get("_TIDYRUN_BOOTSTRAPPED"):
+        return
+    print(
+        f"tidyrun-batch-entrypoint: installing TIDYRUN_PIP_SPEC={pip_spec!r}",
+        file=sys.stderr,
+    )
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--upgrade", pip_spec],
+        check=True,
+    )
+    env = dict(os.environ)
+    env["_TIDYRUN_BOOTSTRAPPED"] = "1"
+    os.execve(
+        sys.executable,
+        [
+            sys.executable,
+            "-c",
+            "from tidyrun.execute import batch_entrypoint; batch_entrypoint()",
+        ],
+        env,
+    )
+
+
 def batch_entrypoint() -> None:
     """Container entry point for AWS Batch jobs.
 
@@ -198,10 +261,16 @@ def batch_entrypoint() -> None:
     array of all job ids in the array), indexed by ``AWS_BATCH_JOB_ARRAY_INDEX``.
     ``TIDYRUN_JOB_ID`` is ignored for array children.
 
+    When ``TIDYRUN_PIP_SPEC`` is set, that tidyrun distribution is installed
+    first and the entrypoint re-executes itself, so the job runs under the
+    same tidyrun version as the machine that materialized the plan.
+
     This function is registered as the ``tidyrun-batch-entrypoint`` console
     script and should be the ``CMD`` of your Batch container image.
     """
     import json
+
+    _maybe_install_pip_spec()
 
     plan_dir = os.environ.get("TIDYRUN_PLAN_DIR")
     if not plan_dir:

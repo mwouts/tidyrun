@@ -133,6 +133,117 @@ def test_batch_entrypoint_exits_when_array_index_out_of_range(
 
 
 # ---------------------------------------------------------------------------
+# Version stamping and TIDYRUN_PIP_SPEC bootstrap
+# ---------------------------------------------------------------------------
+
+
+def test_materialize_stamps_plan_with_tidyrun_version(tmp_path: Path) -> None:
+    import tidyrun
+    from tidyrun.plan import read_plan_info
+
+    plan_dir = tmp_path / "plan"
+    DAG({"result": Job(func=_double, kwargs={"x": 1})}).materialize(plan_dir)
+
+    info = read_plan_info(plan_dir)
+    assert info["kind"] == "plan_info"
+    assert info["tidyrun_version"] == tidyrun.__version__
+
+
+def test_runner_warns_on_tidyrun_version_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import toml
+
+    plan_dir = tmp_path / "plan"
+    DAG({"result": Job(func=_double, kwargs={"x": 21})}).materialize(plan_dir)
+
+    # Simulate a plan written by another (e.g. dev) version of tidyrun.
+    info_file = plan_dir / "plan.toml"
+    info = toml.loads(info_file.read_text(encoding="utf-8"))
+    info["tidyrun_version"] = "0.0.0.dev0"
+    info_file.write_text(toml.dumps(info), encoding="utf-8")
+
+    monkeypatch.setenv("TIDYRUN_PLAN_DIR", str(plan_dir))
+    monkeypatch.setenv("TIDYRUN_JOB_ID", "result")
+    monkeypatch.delenv("AWS_BATCH_JOB_ARRAY_INDEX", raising=False)
+    monkeypatch.delenv("TIDYRUN_PIP_SPEC", raising=False)
+
+    batch_entrypoint()
+
+    assert job_output_exists(plan_dir / "outputs", "result")
+    stderr = capsys.readouterr().err
+    assert "materialized with tidyrun 0.0.0.dev0" in stderr
+
+
+def test_batch_entrypoint_installs_tidyrun_pip_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TIDYRUN_PIP_SPEC triggers a pip install followed by a re-exec."""
+    import sys
+
+    from tidyrun import execute as execute_module
+
+    pip_spec = "tidyrun[s3] @ git+https://github.com/my-org/tidyrun@my-branch"
+    monkeypatch.setenv("TIDYRUN_PIP_SPEC", pip_spec)
+    monkeypatch.delenv("_TIDYRUN_BOOTSTRAPPED", raising=False)
+
+    calls: dict[str, object] = {}
+
+    def _fake_run(cmd: list[str], check: bool) -> None:
+        calls["pip"] = cmd
+        assert check
+
+    class _Reexec(Exception):
+        pass
+
+    def _fake_execve(path: str, argv: list[str], env: dict[str, str]) -> None:
+        calls["execve"] = (path, argv, env)
+        raise _Reexec
+
+    monkeypatch.setattr(execute_module.subprocess, "run", _fake_run)
+    monkeypatch.setattr(execute_module.os, "execve", _fake_execve)
+
+    with pytest.raises(_Reexec):
+        batch_entrypoint()
+
+    assert calls["pip"] == [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--upgrade",
+        pip_spec,
+    ]
+    _, _, reexec_env = calls["execve"]  # type: ignore[misc]
+    assert reexec_env["_TIDYRUN_BOOTSTRAPPED"] == "1"
+
+
+def test_batch_entrypoint_skips_pip_spec_after_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The re-executed entrypoint must not install (or re-exec) again."""
+    from tidyrun import execute as execute_module
+
+    plan_dir = tmp_path / "plan"
+    DAG({"result": Job(func=_double, kwargs={"x": 21})}).materialize(plan_dir)
+
+    monkeypatch.setenv("TIDYRUN_PIP_SPEC", "tidyrun==0.0.0")
+    monkeypatch.setenv("_TIDYRUN_BOOTSTRAPPED", "1")
+    monkeypatch.setenv("TIDYRUN_PLAN_DIR", str(plan_dir))
+    monkeypatch.setenv("TIDYRUN_JOB_ID", "result")
+    monkeypatch.delenv("AWS_BATCH_JOB_ARRAY_INDEX", raising=False)
+
+    def _fail_run(*args: object, **kwargs: object) -> None:
+        raise AssertionError("pip must not run after bootstrap")
+
+    monkeypatch.setattr(execute_module.subprocess, "run", _fail_run)
+
+    batch_entrypoint()
+
+    assert job_output_exists(plan_dir / "outputs", "result")
+
+
+# ---------------------------------------------------------------------------
 # AwsBatchExecutor: extra_env is injected into every submission
 # ---------------------------------------------------------------------------
 

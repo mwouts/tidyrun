@@ -4,6 +4,18 @@ All notable changes to TidyRun are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Development-version support for containerized execution:
+  - `materialize` records the writer's tidyrun version in ``plan.toml`` at
+    the plan root, and job runners warn when they run under a different
+    tidyrun version than the one that wrote the plan.
+  - `tidyrun-batch-entrypoint` honors a new ``TIDYRUN_PIP_SPEC`` environment
+    variable (pass it via ``AwsBatchExecutor(extra_env=...)``): the requested
+    tidyrun distribution — e.g. a git branch — is installed and the
+    entrypoint re-executes itself, so a generic container image runs the
+    same (development) tidyrun version as the submitting machine.
+
 ### Fixed
 
 - `execute_materialized`, `evaluate`, `execute_plan`, `get_job_states`,

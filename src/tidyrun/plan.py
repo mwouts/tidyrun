@@ -182,6 +182,20 @@ def _callable_from_import_spec(module: str, qualname: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
+def read_plan_info(dag_path: Any) -> dict[str, Any]:
+    """Read the ``plan.toml`` metadata written at materialize time.
+
+    Returns an empty dict for plans that predate the file.
+    """
+    info_file = to_path(dag_path) / "plan.toml"
+    if not info_file.is_file():
+        return {}
+    return cast(
+        dict[str, Any],
+        toml.loads(info_file.read_text(encoding="utf-8")),  # pyright: ignore[reportUnknownMemberType]
+    )
+
+
 def load_job_definition(dag_path: Any, job_id: str) -> dict[str, Any]:
     """Load a materialized job definition from disk."""
     plan_dir = to_path(dag_path)

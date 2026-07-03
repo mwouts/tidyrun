@@ -247,6 +247,27 @@ class _PlanCompiler:
         for key, node in nodes.items():
             self._compile_node(node, (*prefix_tuple, key), None, None)
         self._patch_parameter_values()
+        self._write_plan_info()
+
+    def _write_plan_info(self) -> None:
+        """Record the writer's tidyrun version at the plan root.
+
+        Runners compare this against their own version and warn on mismatch,
+        so a container running a different tidyrun than the submitting
+        machine diagnoses itself instead of failing obscurely.
+        """
+        from tidyrun import __version__
+
+        info: dict[str, Any] = {
+            "kind": "plan_info",
+            "schema_version": 1,
+            "tidyrun_version": __version__,
+        }
+        info_file = self._plan_paths.definitions.parent / "plan.toml"
+        info_file.write_text(
+            toml.dumps(info),  # pyright: ignore[reportUnknownMemberType]
+            encoding="utf-8",
+        )
 
     def _register_member(self, path: tuple[Key, ...], node: Node) -> None:
         """Record the canonical key path of *node* and of its nested sub-nodes.
