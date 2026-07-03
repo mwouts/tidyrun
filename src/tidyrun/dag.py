@@ -206,9 +206,19 @@ class _PlanCompiler:
     the dependent job's inputs to the dependency's output location.
     """
 
-    def __init__(self, plan_paths: PlanPaths, reporter: _ProgressReporter) -> None:
+    def __init__(
+        self,
+        plan_paths: PlanPaths,
+        reporter: _ProgressReporter,
+        *,
+        use_sidecar_dep_links: bool = False,
+    ) -> None:
         self._plan_paths = plan_paths
         self._reporter = reporter
+        # Sidecar files instead of symlinks for dependency inputs. Used when
+        # the compiled tree will be uploaded to storage without symlink
+        # support (S3), where local symlinks would be dropped by the upload.
+        self._use_sidecar_dep_links = use_sidecar_dep_links
         # id(node) -> (node, ref). Keeping the node in the value pins ephemeral
         # ParametrizedJob children in memory so their ids cannot be reused.
         self._refs: dict[int, tuple[Node, dict[str, Any]]] = {}
@@ -222,7 +232,7 @@ class _PlanCompiler:
         self._group_parameter_names: dict[str, list[str]] = {}
         # id(ref) -> job ids reachable from that ref (dependency collection).
         self._ref_job_ids: dict[int, frozenset[str]] = {}
-        self._written_definitions: set[Path] = set()
+        self._written_definitions: set[Path | CloudPath] = set()
 
     def compile(self, nodes: Mapping[Key, Node], prefix: str | None) -> None:
         self._plan_paths.definitions.mkdir(parents=True, exist_ok=True)
@@ -446,16 +456,23 @@ class _PlanCompiler:
         input_dir.mkdir(parents=True, exist_ok=True)
         symlink_path = input_dir / arg_name
         target = self._plan_paths.outputs / dep_output_id
-        try:
-            relative_target = Path(os.path.relpath(target, symlink_path.parent))
-            if symlink_path.is_symlink():
-                symlink_path.unlink()
-            if not symlink_path.exists():
-                symlink_path.symlink_to(relative_target)
-        except OSError:
-            # Filesystems without symlink support fall back to a sidecar file.
-            sidecar_path = input_dir / f"{arg_name}.tidyrun"
-            sidecar_path.write_text(dep_output_id, encoding="utf-8")
+        if (
+            not self._use_sidecar_dep_links
+            and isinstance(symlink_path, Path)
+            and isinstance(target, Path)
+        ):
+            try:
+                relative_target = Path(os.path.relpath(target, symlink_path.parent))
+                if symlink_path.is_symlink():
+                    symlink_path.unlink()
+                if not symlink_path.exists():
+                    symlink_path.symlink_to(relative_target)
+                return
+            except OSError:
+                # Filesystems without symlink support fall back to a sidecar.
+                pass
+        sidecar_path = input_dir / f"{arg_name}.tidyrun"
+        sidecar_path.write_text(dep_output_id, encoding="utf-8")
 
     def _collect_job_ids(self, ref: Mapping[str, Any]) -> frozenset[str]:
         cached = self._ref_job_ids.get(id(ref))
@@ -638,18 +655,27 @@ class DAG(Mapping[Key, Node]):
         )
         reporter.info(f"starting ({total_jobs} jobs)")
 
+        if isinstance(dag_path, CloudPath):
+            # Normalize cloud path objects to their URI so the S3 branch below
+            # handles them like s3:// strings.
+            dag_path = str(dag_path)
+
         if isinstance(dag_path, PlanPaths):
             _PlanCompiler(dag_path, reporter).compile(self._nodes, prefix)
             reporter.info("done")
             return dag_path.definitions.parent
 
         if is_s3_location(dag_path):
-            # Compile locally, then upload the whole plan tree.
+            # Compile locally, then upload the whole plan tree. Dependency
+            # links are written as sidecar files: local symlinks would not
+            # survive the upload to S3.
             with TemporaryDirectory() as temp_root:
                 plan_dir = Path(temp_root) / _s3_leaf_name(dag_path)
-                _PlanCompiler(PlanPaths.from_root(plan_dir), reporter).compile(
-                    self._nodes, prefix
-                )
+                _PlanCompiler(
+                    PlanPaths.from_root(plan_dir),
+                    reporter,
+                    use_sidecar_dep_links=True,
+                ).compile(self._nodes, prefix)
                 upload_local_tree_to_s3(plan_dir.parent, dag_path)
             reporter.info("done")
             return AnyPath(dag_path)
@@ -914,13 +940,20 @@ class DAG(Mapping[Key, Node]):
         import shutil
 
         from tidyrun.serialization.metadata import metadata_path, read_metadata
+        from tidyrun.serialization.paths import with_suffix
+
+        def _remove_tree(path: Path | CloudPath) -> None:
+            if isinstance(path, CloudPath):
+                path.rmtree()
+            else:
+                shutil.rmtree(path)
 
         plan_dir = to_path(dag_path)
         outputs_dir = PlanPaths.from_root(plan_dir).outputs
 
         if job_ids is None:
             if outputs_dir.exists():
-                shutil.rmtree(outputs_dir)
+                _remove_tree(outputs_dir)
             return
 
         for job_id in job_ids:
@@ -934,10 +967,10 @@ class DAG(Mapping[Key, Node]):
                 # A corrupt metadata file should not prevent clearing the job;
                 # fall back to deleting the suffix-less payload path.
                 suffix = ""
-            payload = Path(str(base) + suffix) if suffix else base
+            payload = with_suffix(base, suffix) if suffix else base
             if payload.exists():
                 if payload.is_dir():
-                    shutil.rmtree(payload)
+                    _remove_tree(payload)
                 else:
                     payload.unlink()
             meta.unlink()

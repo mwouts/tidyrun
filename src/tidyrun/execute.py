@@ -17,6 +17,7 @@ import subprocess
 import sys
 from typing import Any, cast, Literal
 
+from cloudpathlib import CloudPath
 import toml
 
 from tidyrun.plan import (
@@ -66,8 +67,8 @@ class DAGExecutionError(Exception):
         completed_jobs: set[str],
         cancelled_jobs: set[str],
         *,
-        plan_dir: Path | None = None,
-        outputs_path: Path | None = None,
+        plan_dir: Path | CloudPath | None = None,
+        outputs_path: Path | CloudPath | None = None,
     ) -> None:
         self.failed_job_id = failed_job_id
         self.cause = cause
@@ -172,8 +173,13 @@ def _run_compiled_job(plan_paths: PlanPaths, job_id: str) -> None:
 
 
 def run_materialized_job(dag_path: Any, job_id: str) -> None:
-    """Run one job from a materialized DAG plan."""
-    _run_compiled_job(PlanPaths.from_root(dag_path), job_id)
+    """Run one job from a materialized DAG plan.
+
+    *dag_path* is the plan root — a local path or an ``s3://`` URI — or a
+    runner string with independent component locations (see
+    :meth:`~tidyrun.plan.PlanPaths.to_runner_string`).
+    """
+    _run_compiled_job(PlanPaths.from_runner_string(str(dag_path)), job_id)
 
 
 def batch_entrypoint() -> None:
@@ -290,7 +296,9 @@ def pool_for_mode(execution_mode: ExecutionMode, max_workers: int) -> Executor:
 # ---------------------------------------------------------------------------
 
 
-def _combined_child_checksum(outputs_path: Path, child_ids: list[str]) -> Any:
+def _combined_child_checksum(
+    outputs_path: Path | CloudPath, child_ids: list[str]
+) -> Any:
     from tidyrun.serialization.metadata import (
         checksum_for_named_children,
         read_metadata,
@@ -305,7 +313,7 @@ def _combined_child_checksum(outputs_path: Path, child_ids: list[str]) -> Any:
 
 
 def write_group_metadata(
-    group_id: str, child_ids: list[str], outputs_path: Path
+    group_id: str, child_ids: list[str], outputs_path: Path | CloudPath
 ) -> None:
     """Write the dict-folder .tidyrun metadata for a DAG group node.
 
@@ -323,7 +331,7 @@ def write_group_metadata(
     )
 
 
-def write_root_metadata(outputs_path: Path, child_ids: list[str]) -> None:
+def write_root_metadata(outputs_path: Path | CloudPath, child_ids: list[str]) -> None:
     """Write the root dict-folder .tidyrun so outputs match serialize(dict, ...)."""
     from tidyrun.serialization.metadata import write_metadata
 
@@ -358,7 +366,7 @@ class _GraphScheduler:
         dependencies: Mapping[str, set[str]],
         *,
         plan_paths: PlanPaths,
-        plan_dir: Path,
+        plan_dir: Path | CloudPath,
         job_runner: JobRunner,
         runner_string: str,
         reporter: ProgressReporter,
@@ -574,7 +582,7 @@ class _GraphScheduler:
 def execute_graph(
     dependencies: Mapping[str, set[str]],
     plan_paths: PlanPaths,
-    plan_dir: Path,
+    plan_dir: Path | CloudPath,
     *,
     executor: Executor | None = None,
     max_workers: int | None = None,

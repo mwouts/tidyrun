@@ -6,6 +6,20 @@ All notable changes to TidyRun are documented in this file.
 
 ### Fixed
 
+- `execute_materialized`, `evaluate`, `execute_plan`, `get_job_states`,
+  `clear_outputs`, and `run_materialized_job` now accept ``s3://`` locations
+  (as strings or `CloudPath` objects). Previously the URI was coerced to a
+  local path (e.g. ``s3:/bucket/plan``), so executing a plan materialized to
+  S3 failed with "No materialized plan found" — despite the documented AWS
+  Batch workflow relying on it.
+- Plans materialized to S3 now record dependency inputs as ``.tidyrun``
+  sidecar files. The local symlinks previously created during compilation
+  were silently dropped by the S3 upload, leaving dependency arguments
+  unresolvable.
+- `TIDYRUN_PLAN_DIR` submitted by executors is now the plan root itself
+  (e.g. ``s3://bucket/plan``) for standard-layout plans instead of an
+  internal ``:::``-separated string, and `run_materialized_job` accepts both
+  forms.
 - Fixed a 0.0.7 regression where passing a subset of a member
   `ParametrizedJob` (e.g. `pjob[key]`, or `dag["grid"][key]`) as a job
   dependency raised "depends on a Job or DAG that is not a member of this
