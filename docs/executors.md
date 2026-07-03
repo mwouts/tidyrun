@@ -210,6 +210,10 @@ way.
 4. Back on your laptop, `execute_materialized` polls Batch until all jobs
    finish, then assembles the final result from S3.
 
+When a job fails, the raised error includes the container's exit code and
+reason, the CloudWatch log stream name, and a direct link to the log stream
+in the AWS console (for array jobs, the links point at the failed children).
+
 ### Container entrypoint
 
 The `tidyrun-batch-entrypoint` command (installed with the package) is the only

@@ -6,6 +6,9 @@ All notable changes to TidyRun are documented in this file.
 
 ### Added
 
+- `AwsBatchExecutor` failures now include the container's exit code and
+  reason, the CloudWatch log stream name, and a direct console link to the
+  logs. For failed array jobs the links point at the failed children.
 - Development-version support for containerized execution:
   - `materialize` records the writer's tidyrun version in ``plan.toml`` at
     the plan root, and job runners warn when they run under a different
