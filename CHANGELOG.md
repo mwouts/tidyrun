@@ -20,6 +20,13 @@ All notable changes to TidyRun are documented in this file.
   (e.g. ``s3://bucket/plan``) for standard-layout plans instead of an
   internal ``:::``-separated string, and `run_materialized_job` accepts both
   forms.
+- The AWS-Batch-style container flow (plan on S3, `tidyrun-batch-entrypoint`
+  in a separate process) is now covered by end-to-end tests against a moto S3
+  server, including array children and dependencies. The
+  "Missing job definition file" error now reports the location that was
+  searched, and the docs warn that the container image must run the same
+  tidyrun version as the submitting machine (older runners cannot read
+  ``s3://`` plans).
 - Fixed a 0.0.7 regression where passing a subset of a member
   `ParametrizedJob` (e.g. `pjob[key]`, or `dag["grid"][key]`) as a job
   dependency raised "depends on a Job or DAG that is not a member of this

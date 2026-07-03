@@ -281,8 +281,7 @@ with SlurmExecutor(
     memory="8G",
 ) as executor:
     result = dag.execute_materialized(
-        dag_path="/shared/plans/run-001",
-        output_path="/shared/outputs/run-001",
+        dag_path="/shared/plans/run-001",  # outputs go to dag_path/outputs
         executor=executor,
     )
 ```
@@ -291,7 +290,8 @@ with SlurmExecutor(
 
 `AwsBatchExecutor` submits each job as a Batch container task, polling
 `describe_jobs` for completion. The plan directory must be an S3 URI, and the
-container image must call `tidyrun-batch-entrypoint` as its `CMD`. See the
+container image must call `tidyrun-batch-entrypoint` as its `CMD` — running
+the **same tidyrun version** as the submitting machine. See the
 [Executors guide](executors.md#aws-batch) for the container setup, IAM
 requirements, and a full deployment example with git commit pinning.
 
@@ -303,8 +303,7 @@ with AwsBatchExecutor(
     job_definition="my-worker:1",
 ) as executor:
     result = dag.execute_materialized(
-        dag_path="s3://my-bucket/plans/run-001",
-        output_path="s3://my-bucket/outputs/run-001",
+        dag_path="s3://my-bucket/plans/run-001",  # outputs go to dag_path/outputs
         executor=executor,
     )
 ```

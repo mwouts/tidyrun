@@ -191,7 +191,10 @@ def load_job_definition(dag_path: Any, job_id: str) -> dict[str, Any]:
     definition_file = _find_definition_file(definitions_dir, normalized_job_id)
 
     if definition_file is None:
-        raise ValueError(f"Missing job definition file for job {normalized_job_id!r}")
+        raise ValueError(
+            f"Missing job definition file for job {normalized_job_id!r} "
+            f"in {definitions_dir}"
+        )
 
     definition = cast(
         dict[str, Any],

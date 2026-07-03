@@ -231,9 +231,17 @@ If your functions live in a published package this is all you need:
 
 ```dockerfile
 FROM python:3.12-slim
-RUN pip install "tidyrun[s3]" my-package
+RUN pip install "tidyrun[s3]==<version>" my-package
 CMD ["tidyrun-batch-entrypoint"]
 ```
+
+!!! warning "Keep tidyrun versions aligned"
+    The container reads the plan that your submitting machine wrote, so pin
+    the **same tidyrun version** in the image as on the submitting machine.
+    A container running an older tidyrun may not be able to read the plan at
+    all — versions before 0.0.8 fail with
+    ``Missing job definition file for job ...`` when ``TIDYRUN_PLAN_DIR`` is
+    an ``s3://`` URI, because the runner interpreted the URI as a local path.
 
 ### Deploying a local git repository
 
@@ -263,7 +271,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends git \
  && rm -rf /var/lib/apt/lists/*
 
-RUN pip install "tidyrun[s3]"
+RUN pip install "tidyrun[s3]==<version>"
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
@@ -343,8 +351,7 @@ executor = AwsBatchExecutor(
     },
 )
 results = dag.execute_materialized(
-    dag_path=PLAN_DIR,
-    output_path=f"s3://my-bucket/outputs/{GIT_COMMIT[:8]}",
+    dag_path=PLAN_DIR,  # outputs are written to PLAN_DIR/outputs
     executor=executor,
 )
 
