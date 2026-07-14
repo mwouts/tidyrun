@@ -7,9 +7,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import importlib
 import pickle
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, cast, Literal
 
+from cloudpathlib import AnyPath, CloudPath
 import toml
 
 from tidyrun.keys import decode_key, encode_key
@@ -20,33 +21,52 @@ from tidyrun.keys import decode_key, encode_key
 # ---------------------------------------------------------------------------
 
 
-def to_path(value: Any) -> Path:
-    return value if isinstance(value, Path) else Path(value)
+def to_path(value: Any) -> Path | CloudPath:
+    """Coerce *value* to a path, preserving cloud locations.
+
+    Strings that are cloud URIs (e.g. ``s3://bucket/plan``) become
+    :class:`~cloudpathlib.CloudPath` instances instead of being mangled into
+    local paths; existing Path/CloudPath objects pass through unchanged.
+    """
+    if isinstance(value, (Path, CloudPath)):
+        return value
+    return AnyPath(str(value))
+
+
+def _relative_to(path: Path | CloudPath, base: Path | CloudPath) -> PurePath:
+    """``path.relative_to(base)`` for two local or two cloud paths."""
+    if isinstance(path, Path) and isinstance(base, Path):
+        return path.relative_to(base)
+    if isinstance(path, CloudPath) and isinstance(base, CloudPath):
+        return path.relative_to(base)
+    raise ValueError(f"Cannot mix local and cloud paths: {path!r}, {base!r}")
 
 
 def normalize_job_id(job_id: str) -> str:
     return job_id.replace('\\"', '"')
 
 
-def job_definition_file(definitions_path: Path, job_id: str) -> Path:
+def job_definition_file(
+    definitions_path: Path | CloudPath, job_id: str
+) -> Path | CloudPath:
     return definitions_path / Path(f"{job_id}.tidyrun")
 
 
-def job_output_base(outputs_path: Path, job_id: str) -> Path:
+def job_output_base(outputs_path: Path | CloudPath, job_id: str) -> Path | CloudPath:
     return outputs_path / Path(job_id)
 
 
-def job_output_exists(outputs_path: Path, job_id: str) -> bool:
+def job_output_exists(outputs_path: Path | CloudPath, job_id: str) -> bool:
     from tidyrun.serialization.metadata import metadata_exists
 
     return metadata_exists(job_output_base(outputs_path, job_id))
 
 
-def running_path(outputs_path: Path, job_id: str) -> Path:
+def running_path(outputs_path: Path | CloudPath, job_id: str) -> Path | CloudPath:
     return outputs_path / Path(job_id + ".running")
 
 
-def failed_path(outputs_path: Path, job_id: str) -> Path:
+def failed_path(outputs_path: Path | CloudPath, job_id: str) -> Path | CloudPath:
     return outputs_path / Path(job_id + ".failed")
 
 
@@ -65,9 +85,9 @@ class PlanPaths:
     files, or write outputs to a scratch volume.
     """
 
-    definitions: Path
-    inputs: Path
-    outputs: Path
+    definitions: Path | CloudPath
+    inputs: Path | CloudPath
+    outputs: Path | CloudPath
 
     def __post_init__(self) -> None:
         self.definitions = to_path(self.definitions)
@@ -85,7 +105,20 @@ class PlanPaths:
         )
 
     def to_runner_string(self) -> str:
-        """Encode as a single string for passing to job runner functions."""
+        """Encode as a single string for passing to job runner functions.
+
+        For the standard layout (all three components under one root) this is
+        simply the root itself — a plain path or ``s3://`` URI, which is also
+        what ``TIDYRUN_PLAN_DIR`` expects. Independent component locations are
+        joined with a ``:::`` separator.
+        """
+        root = self.definitions.parent
+        if (
+            self.definitions == root / "definitions"
+            and self.inputs == root / "inputs"
+            and self.outputs == root / "outputs"
+        ):
+            return str(root)
         sep = ":::"
         defs = str(self.definitions)
         inps = str(self.inputs)
@@ -103,7 +136,7 @@ class PlanPaths:
         sep = ":::"
         if sep in s:
             parts = s.split(sep, 2)
-            return cls(Path(parts[0]), Path(parts[1]), Path(parts[2]))
+            return cls(to_path(parts[0]), to_path(parts[1]), to_path(parts[2]))
         return cls.from_root(s)
 
 
@@ -112,7 +145,9 @@ class PlanPaths:
 # ---------------------------------------------------------------------------
 
 
-def _find_definition_file(definitions_dir: Path, job_id: str) -> Path | None:
+def _find_definition_file(
+    definitions_dir: Path | CloudPath, job_id: str
+) -> Path | CloudPath | None:
     """Find the definition file for a job, trying direct file then shorter prefixes.
 
     As a final fallback, checks for the ROOT_ARRAY_GROUP definition file used when
@@ -147,6 +182,20 @@ def _callable_from_import_spec(module: str, qualname: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
+def read_plan_info(dag_path: Any) -> dict[str, Any]:
+    """Read the ``plan.toml`` metadata written at materialize time.
+
+    Returns an empty dict for plans that predate the file.
+    """
+    info_file = to_path(dag_path) / "plan.toml"
+    if not info_file.is_file():
+        return {}
+    return cast(
+        dict[str, Any],
+        toml.loads(info_file.read_text(encoding="utf-8")),  # pyright: ignore[reportUnknownMemberType]
+    )
+
+
 def load_job_definition(dag_path: Any, job_id: str) -> dict[str, Any]:
     """Load a materialized job definition from disk."""
     plan_dir = to_path(dag_path)
@@ -156,7 +205,10 @@ def load_job_definition(dag_path: Any, job_id: str) -> dict[str, Any]:
     definition_file = _find_definition_file(definitions_dir, normalized_job_id)
 
     if definition_file is None:
-        raise ValueError(f"Missing job definition file for job {normalized_job_id!r}")
+        raise ValueError(
+            f"Missing job definition file for job {normalized_job_id!r} "
+            f"in {definitions_dir}"
+        )
 
     definition = cast(
         dict[str, Any],
@@ -165,7 +217,7 @@ def load_job_definition(dag_path: Any, job_id: str) -> dict[str, Any]:
 
     # Derive array_group from the definition file path (not stored in the file).
     if "parameter_names" in definition:
-        rel = definition_file.relative_to(definitions_dir).with_suffix("")
+        rel = _relative_to(definition_file, definitions_dir).with_suffix("")
         definition["array_group"] = rel.as_posix()
 
     definition["job_id"] = normalized_job_id
@@ -230,7 +282,7 @@ def _resolve_parameter_value(
 
 
 def _resolve_arg(
-    plan_dir: Path,
+    plan_dir: Path | CloudPath,
     spec: Mapping[str, Any],
     *,
     arg_name: str | None = None,
@@ -252,7 +304,7 @@ def _resolve_arg(
                 "arg_name and requested_job_id are required to resolve a dependency arg"
             )
         dep_path = plan_dir / "inputs" / requested_job_id / arg_name
-        if dep_path.is_symlink():
+        if isinstance(dep_path, Path) and dep_path.is_symlink():
             return deserialize(dep_path.resolve())
         # Non-local (S3) or missing symlink: use sidecar written by the compiler
         sidecar = plan_dir / "inputs" / requested_job_id / f"{arg_name}.tidyrun"
@@ -342,12 +394,12 @@ class PlanGraph:
     array_groups: dict[str, set[str]]
 
 
-def read_plan_graph(definitions_dir: Path) -> PlanGraph:
+def read_plan_graph(definitions_dir: Path | CloudPath) -> PlanGraph:
     """Scan ``definitions/`` and build the job dependency graph."""
     graph = PlanGraph(dependencies={}, array_group_by_job_id={}, array_groups={})
     if not definitions_dir.is_dir():
         return graph
-    for def_file in sorted(definitions_dir.rglob("*.tidyrun")):
+    for def_file in sorted(definitions_dir.rglob("*.tidyrun")):  # pyright: ignore[reportUnknownMemberType]
         definition = cast(
             dict[str, Any],
             toml.loads(def_file.read_text(encoding="utf-8")),  # pyright: ignore[reportUnknownMemberType]
@@ -357,7 +409,7 @@ def read_plan_graph(definitions_dir: Path) -> PlanGraph:
             for dep in cast(list[str], definition.get("dependencies", []))
         }
         # The job (or array group) id is the definition file path itself.
-        group_id = def_file.relative_to(definitions_dir).with_suffix("").as_posix()
+        group_id = _relative_to(def_file, definitions_dir).with_suffix("").as_posix()
         parameter_names = cast(list[str], definition.get("parameter_names", []))
         if not parameter_names:
             graph.dependencies[normalize_job_id(group_id)] = deps
@@ -377,7 +429,7 @@ def read_plan_graph(definitions_dir: Path) -> PlanGraph:
 
 
 def enumerate_job_ids_from_definitions(
-    definitions_dir: Path,
+    definitions_dir: Path | CloudPath,
 ) -> dict[str, str | None]:
     """Scan definitions/ and return {job_id: array_group or None}."""
     graph = read_plan_graph(definitions_dir)

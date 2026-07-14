@@ -17,6 +17,7 @@ import subprocess
 import sys
 from typing import Any, cast, Literal
 
+from cloudpathlib import CloudPath
 import toml
 
 from tidyrun.plan import (
@@ -66,8 +67,8 @@ class DAGExecutionError(Exception):
         completed_jobs: set[str],
         cancelled_jobs: set[str],
         *,
-        plan_dir: Path | None = None,
-        outputs_path: Path | None = None,
+        plan_dir: Path | CloudPath | None = None,
+        outputs_path: Path | CloudPath | None = None,
     ) -> None:
         self.failed_job_id = failed_job_id
         self.cause = cause
@@ -131,6 +132,34 @@ class DAGExecutionError(Exception):
 # Job runners
 # ---------------------------------------------------------------------------
 
+#: Plan roots already checked for a version mismatch in this process.
+_version_checked_plan_dirs: set[str] = set()
+
+
+def _warn_on_version_mismatch(plan_dir: Path | CloudPath) -> None:
+    """Warn (once per plan and process) when this runner's tidyrun version
+    differs from the one that materialized the plan."""
+    key = str(plan_dir)
+    if key in _version_checked_plan_dirs:
+        return
+    _version_checked_plan_dirs.add(key)
+
+    from tidyrun import __version__
+    from tidyrun.plan import read_plan_info
+
+    try:
+        written_by = read_plan_info(plan_dir).get("tidyrun_version")
+    except Exception:
+        return
+    if isinstance(written_by, str) and written_by != __version__:
+        print(
+            f"Warning: plan {key} was materialized with tidyrun {written_by}, "
+            f"but this runner uses tidyrun {__version__}. If jobs fail to "
+            "load, install the matching tidyrun version in this environment "
+            "(for AWS Batch, see TIDYRUN_PIP_SPEC).",
+            file=sys.stderr,
+        )
+
 
 def _run_compiled_job(plan_paths: PlanPaths, job_id: str) -> None:
     import datetime
@@ -139,6 +168,7 @@ def _run_compiled_job(plan_paths: PlanPaths, job_id: str) -> None:
     from tidyrun.serialization.api import serialize
 
     plan_dir = plan_paths.definitions.parent
+    _warn_on_version_mismatch(plan_dir)
     definition = load_job_definition(plan_dir, job_id)
     inputs = load_job_inputs(definition, plan_dir)
     func = load_callable(definition)
@@ -172,8 +202,47 @@ def _run_compiled_job(plan_paths: PlanPaths, job_id: str) -> None:
 
 
 def run_materialized_job(dag_path: Any, job_id: str) -> None:
-    """Run one job from a materialized DAG plan."""
-    _run_compiled_job(PlanPaths.from_root(dag_path), job_id)
+    """Run one job from a materialized DAG plan.
+
+    *dag_path* is the plan root — a local path or an ``s3://`` URI — or a
+    runner string with independent component locations (see
+    :meth:`~tidyrun.plan.PlanPaths.to_runner_string`).
+    """
+    _run_compiled_job(PlanPaths.from_runner_string(str(dag_path)), job_id)
+
+
+def _maybe_install_pip_spec() -> None:
+    """Install the tidyrun requested via ``TIDYRUN_PIP_SPEC``, then re-exec.
+
+    This lets a generic container image run the exact tidyrun version used by
+    the submitting machine — including unreleased development versions — by
+    passing e.g.
+    ``extra_env={"TIDYRUN_PIP_SPEC": "tidyrun[s3] @ git+https://github.com/my-org/tidyrun@my-branch"}``
+    to :class:`~tidyrun.AwsBatchExecutor`. The current process is replaced
+    after the install so the freshly installed version is imported cleanly.
+    """
+    pip_spec = os.environ.get("TIDYRUN_PIP_SPEC")
+    if not pip_spec or os.environ.get("_TIDYRUN_BOOTSTRAPPED"):
+        return
+    print(
+        f"tidyrun-batch-entrypoint: installing TIDYRUN_PIP_SPEC={pip_spec!r}",
+        file=sys.stderr,
+    )
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--upgrade", pip_spec],
+        check=True,
+    )
+    env = dict(os.environ)
+    env["_TIDYRUN_BOOTSTRAPPED"] = "1"
+    os.execve(
+        sys.executable,
+        [
+            sys.executable,
+            "-c",
+            "from tidyrun.execute import batch_entrypoint; batch_entrypoint()",
+        ],
+        env,
+    )
 
 
 def batch_entrypoint() -> None:
@@ -192,10 +261,16 @@ def batch_entrypoint() -> None:
     array of all job ids in the array), indexed by ``AWS_BATCH_JOB_ARRAY_INDEX``.
     ``TIDYRUN_JOB_ID`` is ignored for array children.
 
+    When ``TIDYRUN_PIP_SPEC`` is set, that tidyrun distribution is installed
+    first and the entrypoint re-executes itself, so the job runs under the
+    same tidyrun version as the machine that materialized the plan.
+
     This function is registered as the ``tidyrun-batch-entrypoint`` console
     script and should be the ``CMD`` of your Batch container image.
     """
     import json
+
+    _maybe_install_pip_spec()
 
     plan_dir = os.environ.get("TIDYRUN_PLAN_DIR")
     if not plan_dir:
@@ -290,7 +365,9 @@ def pool_for_mode(execution_mode: ExecutionMode, max_workers: int) -> Executor:
 # ---------------------------------------------------------------------------
 
 
-def _combined_child_checksum(outputs_path: Path, child_ids: list[str]) -> Any:
+def _combined_child_checksum(
+    outputs_path: Path | CloudPath, child_ids: list[str]
+) -> Any:
     from tidyrun.serialization.metadata import (
         checksum_for_named_children,
         read_metadata,
@@ -305,7 +382,7 @@ def _combined_child_checksum(outputs_path: Path, child_ids: list[str]) -> Any:
 
 
 def write_group_metadata(
-    group_id: str, child_ids: list[str], outputs_path: Path
+    group_id: str, child_ids: list[str], outputs_path: Path | CloudPath
 ) -> None:
     """Write the dict-folder .tidyrun metadata for a DAG group node.
 
@@ -323,7 +400,7 @@ def write_group_metadata(
     )
 
 
-def write_root_metadata(outputs_path: Path, child_ids: list[str]) -> None:
+def write_root_metadata(outputs_path: Path | CloudPath, child_ids: list[str]) -> None:
     """Write the root dict-folder .tidyrun so outputs match serialize(dict, ...)."""
     from tidyrun.serialization.metadata import write_metadata
 
@@ -358,7 +435,7 @@ class _GraphScheduler:
         dependencies: Mapping[str, set[str]],
         *,
         plan_paths: PlanPaths,
-        plan_dir: Path,
+        plan_dir: Path | CloudPath,
         job_runner: JobRunner,
         runner_string: str,
         reporter: ProgressReporter,
@@ -574,7 +651,7 @@ class _GraphScheduler:
 def execute_graph(
     dependencies: Mapping[str, set[str]],
     plan_paths: PlanPaths,
-    plan_dir: Path,
+    plan_dir: Path | CloudPath,
     *,
     executor: Executor | None = None,
     max_workers: int | None = None,

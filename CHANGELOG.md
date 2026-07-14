@@ -2,6 +2,57 @@
 
 All notable changes to TidyRun are documented in this file.
 
+## [0.0.8] — (2026-07-14)
+
+### Added
+
+- `AwsBatchExecutor` failures now include the container's exit code and
+  reason, the CloudWatch log stream name, and a direct console link to the
+  logs. For failed array jobs the links point at the failed children.
+- Development-version support for containerized execution:
+  - `materialize` records the writer's tidyrun version in ``plan.toml`` at
+    the plan root, and job runners warn when they run under a different
+    tidyrun version than the one that wrote the plan.
+  - `tidyrun-batch-entrypoint` honors a new ``TIDYRUN_PIP_SPEC`` environment
+    variable (pass it via ``AwsBatchExecutor(extra_env=...)``): the requested
+    tidyrun distribution — e.g. a git branch — is installed and the
+    entrypoint re-executes itself, so a generic container image runs the
+    same (development) tidyrun version as the submitting machine.
+
+### Fixed
+
+- `execute_materialized`, `evaluate`, `execute_plan`, `get_job_states`,
+  `clear_outputs`, and `run_materialized_job` now accept ``s3://`` locations
+  (as strings or `CloudPath` objects). Previously the URI was coerced to a
+  local path (e.g. ``s3:/bucket/plan``), so executing a plan materialized to
+  S3 failed with "No materialized plan found" — despite the documented AWS
+  Batch workflow relying on it.
+- Plans materialized to S3 now record dependency inputs as ``.tidyrun``
+  sidecar files. The local symlinks previously created during compilation
+  were silently dropped by the S3 upload, leaving dependency arguments
+  unresolvable.
+- `TIDYRUN_PLAN_DIR` submitted by executors is now the plan root itself
+  (e.g. ``s3://bucket/plan``) for standard-layout plans instead of an
+  internal ``:::``-separated string, and `run_materialized_job` accepts both
+  forms.
+- The AWS-Batch-style container flow (plan on S3, `tidyrun-batch-entrypoint`
+  in a separate process) is now covered by end-to-end tests against a moto S3
+  server, including array children and dependencies. The
+  "Missing job definition file" error now reports the location that was
+  searched, and the docs warn that the container image must run the same
+  tidyrun version as the submitting machine (older runners cannot read
+  ``s3://`` plans).
+- Fixed a 0.0.7 regression where passing a subset of a member
+  `ParametrizedJob` (e.g. `pjob[key]`, or `dag["grid"][key]`) as a job
+  dependency raised "depends on a Job or DAG that is not a member of this
+  DAG". Subsets — whether a smaller `ParametrizedJob` or a single job
+  instance — are now resolved to the member's already-compiled jobs, with the
+  dependency input linked to the corresponding output subfolder (or single
+  job output). Genuinely unregistered jobs still raise the same error.
+- Jobs and parametrized jobs registered inside nested DAG members can now be
+  referenced as dependencies; previously only top-level members were
+  recognized.
+
 ## [0.0.7] — (2026-07-02)
 
 ### Added

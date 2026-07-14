@@ -7,6 +7,28 @@ import re
 import threading
 import time
 from typing import Any, Mapping, Optional, Protocol, cast
+from urllib.parse import quote
+
+#: Log group used by AWS Batch when the job definition does not override it.
+_DEFAULT_BATCH_LOG_GROUP = "/aws/batch/job"
+
+
+def _console_escape(value: str) -> str:
+    """Escape a path component for CloudWatch console URLs.
+
+    The console fragment uses double-encoding: characters are percent-encoded
+    and the ``%`` itself is written as ``$25`` (so ``/`` becomes ``$252F``).
+    """
+    return quote(value, safe="").replace("%", "$25")
+
+
+def _cloudwatch_log_url(region: str, log_group: str, log_stream: str) -> str:
+    """Deep link to a CloudWatch log stream in the AWS console."""
+    return (
+        f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}"
+        f"#logsV2:log-groups/log-group/{_console_escape(log_group)}"
+        f"/log-events/{_console_escape(log_stream)}"
+    )
 
 
 class _BatchClient(Protocol):
@@ -75,6 +97,7 @@ class AwsBatchExecutor(Executor):
         self._job_definition = job_definition
         self._extra_env: dict[str, str] = dict(extra_env) if extra_env else {}
         self._poll_interval_seconds = poll_interval_seconds
+        self._region_name = region_name
         self._shutdown = False
         self._lock = threading.Lock()
         self._threads: list[threading.Thread] = []
@@ -247,9 +270,11 @@ class AwsBatchExecutor(Executor):
                     return
                 if status in self._TERMINAL_FAILURE:
                     reason = job.get("statusReason") or "Unknown AWS Batch failure"
+                    details = self._failure_details(job)
                     future.set_exception(
                         RuntimeError(
-                            f"AWS Batch job {submitted.job_id} failed: {reason}"
+                            f"AWS Batch job {submitted.job_id} failed: "
+                            f"{reason}{details}"
                         )
                     )
                     return
@@ -261,6 +286,81 @@ class AwsBatchExecutor(Executor):
 
         if self._shutdown and not future.done():
             future.set_exception(RuntimeError("Executor shut down before completion"))
+
+    # -- failure diagnostics --------------------------------------------------
+
+    def _region(self) -> str | None:
+        """The region for console links: explicit, or from the boto3 client."""
+        if self._region_name:
+            return self._region_name
+        meta = getattr(self._batch_client, "meta", None)
+        region = getattr(meta, "region_name", None)
+        return region if isinstance(region, str) and region else None
+
+    def _log_location_lines(self, container: Mapping[str, Any]) -> list[str]:
+        """Log stream name and CloudWatch console link, when available."""
+        log_stream = container.get("logStreamName")
+        if not isinstance(log_stream, str) or not log_stream:
+            return []
+        log_config = cast(Mapping[str, Any], container.get("logConfiguration") or {})
+        options = cast(Mapping[str, Any], log_config.get("options") or {})
+        log_group = str(options.get("awslogs-group") or _DEFAULT_BATCH_LOG_GROUP)
+        lines = [f"Log stream: {log_group}/{log_stream}"]
+        region = self._region()
+        if region:
+            lines.append(f"Logs: {_cloudwatch_log_url(region, log_group, log_stream)}")
+        return lines
+
+    def _failure_details(self, job: Mapping[str, Any]) -> str:
+        """Extra failure context: container reason, exit code, and log links.
+
+        For array jobs the parent has no log stream of its own, so the failed
+        children are described and their log links reported instead. Purely
+        diagnostic: any error while gathering details is swallowed so the
+        original failure is never masked.
+        """
+        try:
+            lines: list[str] = []
+            container = cast(Mapping[str, Any], job.get("container") or {})
+            container_reason = container.get("reason")
+            if container_reason:
+                lines.append(f"Container reason: {container_reason}")
+            exit_code = container.get("exitCode")
+            if exit_code is not None:
+                lines.append(f"Exit code: {exit_code}")
+            log_lines = self._log_location_lines(container)
+            lines.extend(log_lines)
+
+            array_properties = cast(Mapping[str, Any], job.get("arrayProperties") or {})
+            array_size = array_properties.get("size")
+            if not log_lines and isinstance(array_size, int) and array_size > 0:
+                lines.extend(
+                    self._failed_children_lines(str(job.get("jobId")), array_size)
+                )
+            return "".join(f"\n  {line}" for line in lines)
+        except Exception:
+            return ""
+
+    def _failed_children_lines(self, parent_job_id: str, size: int) -> list[str]:
+        # describe_jobs accepts at most 100 job ids per call.
+        child_ids = [f"{parent_job_id}:{index}" for index in range(min(size, 100))]
+        response = self._batch_client.describe_jobs(jobs=child_ids)
+        children = cast(list[Mapping[str, Any]], response.get("jobs", []))
+        failed = [
+            child for child in children if child.get("status") in self._TERMINAL_FAILURE
+        ]
+        lines: list[str] = []
+        for child in failed[:3]:
+            child_reason = child.get("statusReason") or "unknown reason"
+            lines.append(f"Failed array child {child.get('jobId')}: {child_reason}")
+            lines.extend(
+                self._log_location_lines(
+                    cast(Mapping[str, Any], child.get("container") or {})
+                )
+            )
+        if len(failed) > 3:
+            lines.append(f"... and {len(failed) - 3} more failed array children")
+        return lines
 
     @staticmethod
     def _build_job_name(job_id: str) -> str:

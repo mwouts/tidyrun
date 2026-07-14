@@ -210,6 +210,10 @@ way.
 4. Back on your laptop, `execute_materialized` polls Batch until all jobs
    finish, then assembles the final result from S3.
 
+When a job fails, the raised error includes the container's exit code and
+reason, the CloudWatch log stream name, and a direct link to the log stream
+in the AWS console (for array jobs, the links point at the failed children).
+
 ### Container entrypoint
 
 The `tidyrun-batch-entrypoint` command (installed with the package) is the only
@@ -231,9 +235,53 @@ If your functions live in a published package this is all you need:
 
 ```dockerfile
 FROM python:3.12-slim
-RUN pip install "tidyrun[s3]" my-package
+RUN pip install "tidyrun[s3]==<version>" my-package
 CMD ["tidyrun-batch-entrypoint"]
 ```
+
+!!! warning "Keep tidyrun versions aligned"
+    The container reads the plan that your submitting machine wrote, so pin
+    the **same tidyrun version** in the image as on the submitting machine.
+    A container running an older tidyrun may not be able to read the plan at
+    all — versions before 0.0.8 fail with
+    ``Missing job definition file for job ...`` when ``TIDYRUN_PLAN_DIR`` is
+    an ``s3://`` URI, because the runner interpreted the URI as a local path.
+
+    Each plan records the tidyrun version that wrote it (``plan.toml`` at the
+    plan root), and the runner logs a warning when its own version differs.
+
+### Using a development version of tidyrun
+
+When the submitting machine runs an unreleased tidyrun (a git checkout or
+branch), the container must run that same version. Two ways to do it:
+
+1. **Bake it into the image** — install tidyrun from your git ref instead of
+   PyPI:
+
+    ```dockerfile
+    RUN pip install "tidyrun[s3] @ git+https://github.com/my-org/tidyrun@my-branch"
+    ```
+
+2. **Keep a generic image and bootstrap at runtime** — pass a pip
+   requirement through ``TIDYRUN_PIP_SPEC``. The entrypoint installs it and
+   re-executes itself before running the job, so every container picks up
+   your development version without rebuilding the image:
+
+    ```python
+    executor = AwsBatchExecutor(
+        job_queue="my-research-queue",
+        job_definition="my-research-base:3",
+        extra_env={
+            "TIDYRUN_PIP_SPEC": "tidyrun[s3] @ git+https://github.com/my-org/tidyrun@my-branch",
+        },
+    )
+    ```
+
+    Any pip requirement works — a git URL with a branch or commit, a version
+    pin like ``tidyrun[s3]==0.0.8``, or an S3-downloaded wheel path if your
+    image fetches one. Runtime installs add a few seconds per container and
+    require network access to the package source; prefer baking the image
+    once your version stabilizes.
 
 ### Deploying a local git repository
 
@@ -263,7 +311,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends git \
  && rm -rf /var/lib/apt/lists/*
 
-RUN pip install "tidyrun[s3]"
+RUN pip install "tidyrun[s3]==<version>"
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
@@ -343,8 +391,7 @@ executor = AwsBatchExecutor(
     },
 )
 results = dag.execute_materialized(
-    dag_path=PLAN_DIR,
-    output_path=f"s3://my-bucket/outputs/{GIT_COMMIT[:8]}",
+    dag_path=PLAN_DIR,  # outputs are written to PLAN_DIR/outputs
     executor=executor,
 )
 
